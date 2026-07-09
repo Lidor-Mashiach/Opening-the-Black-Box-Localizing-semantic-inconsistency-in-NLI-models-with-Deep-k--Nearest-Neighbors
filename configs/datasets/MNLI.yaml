@@ -1,0 +1,12 @@
+# MNLI - Multi-Genre NLI (Williams et al., 2018). Ten genres. Medium difficulty.
+dataset_key: MNLI
+hf_id: nyu-mll/multi_nli
+dir: MNLI-MultiGenre_NLI
+splits:
+  train: train
+  validation: validation_matched      # MNLI test labels are private, so:
+  test: validation_mismatched         # matched-dev = validation, mismatched-dev = test
+notes: >
+  The official MNLI test set has no public labels. Following common practice,
+  validation_matched serves as the validation set and validation_mismatched
+  as the held-out test set.

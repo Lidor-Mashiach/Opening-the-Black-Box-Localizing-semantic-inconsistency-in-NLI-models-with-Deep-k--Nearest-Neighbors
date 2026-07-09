@@ -1,0 +1,82 @@
+# ⚙️ Configuration
+
+All experiment knobs in one place, as YAML. Nothing is hard-coded in the
+pipeline scripts.
+
+## 🔄 Merge Model
+
+One **base** file plus small **override** files, merged in this order
+(later wins, nested keys merge deep):
+
+```
+base.yaml  ->  models/<MODEL>.yaml  ->  datasets/<DATASET>.yaml  ->  tuned/<MODEL>__<DATASET>.yaml
+```
+
+The last, optional layer is written by Optuna ([`tuning/`](../tuning/README.md))
+and carries the best training hyper-parameters found for that combination -
+rerun the pipeline with `--force` to retrain with them.
+
+`common/config_loader.py::load_config(model_key, dataset_key)` performs the
+merge; every script in the pipeline goes through it.
+
+## 📁 Files
+
+| File | Holds |
+|------|-------|
+| `base.yaml` | Seed, label convention, DkNN K candidates + validation fraction, paraphrase generation (generator / verifier models, candidates, quota), sampling caps, training defaults, encoding settings, Optuna search space |
+| `tuned/<MODEL>__<DATASET>.yaml` | Optional best-hyper-parameter overlay, written automatically by `tuning/run_tuning.py` |
+| `models/BERT-base.yaml` | `hf_id`, pooling (`cls`) |
+| `models/RoBERTa-large.yaml` | `hf_id`, pooling, smaller batch + lower LR |
+| `models/DeBERTa-large.yaml` | `hf_id` (v1; v3 swap documented inline), pooling, overrides |
+| `models/BART-large.yaml` | `hf_id`, pooling `eos` (encoder-decoder), overrides |
+| `datasets/SNLI.yaml` | `hf_id`, folder, split mapping |
+| `datasets/MNLI.yaml` | `hf_id`, folder, split mapping (matched-dev = validation, mismatched-dev = test) |
+| `datasets/ANLI.yaml` | `hf_id`, folder, rounds r1-r3 |
+
+## 🏷️ Published Checkpoint Provenance (official sources)
+
+The pre-declared checkpoints are the **official releases of the model
+authors' own organizations** - the best published fits for MNLI:
+
+| Combination | Checkpoint | Publisher (official HF org) | Reported MNLI accuracy | Proof / source |
+|-------------|------------|----------------------------|------------------------|----------------|
+| RoBERTa-large x MNLI | `FacebookAI/roberta-large-mnli` | FacebookAI (Meta) | ~90.2 (matched) | https://huggingface.co/FacebookAI/roberta-large-mnli |
+| DeBERTa-large x MNLI | `microsoft/deberta-large-mnli` | Microsoft | 91.3 / 91.1 (m/mm) | https://huggingface.co/microsoft/deberta-large-mnli |
+| BART-large x MNLI | `facebook/bart-large-mnli` | Facebook (Meta) | ~89.9 / 90.0 (m/mm) | https://huggingface.co/facebook/bart-large-mnli |
+
+Everything else is fine-tuned locally by Step-1, because: (a) no **official**
+single-dataset SNLI / ANLI checkpoints exist for these architectures;
+(b) available community mixes (e.g. SNLI+MNLI+FEVER+ANLI models) would
+violate the project's dataset-separation principle; (c) BERT-base has no
+official NLI checkpoint at all - and is the cheapest to fine-tune.
+
+## 🏁 Published NLI Checkpoints (optional)
+
+A model YAML may declare `nli_checkpoints: {<DATASET>: <hf_id>}` - a
+published, **single-dataset** fine-tuned checkpoint that lets the combination
+skip `train.py` entirely (`resolve_checkpoint` prefers a local Step-1
+checkpoint, then falls back to this). Predictions are auto-remapped to the
+dataset label convention via the checkpoint's `id2label`.
+
+The three official MNLI checkpoints are pre-declared (RoBERTa / DeBERTa /
+BART - the best published fits for MNLI). SNLI / ANLI / BERT-base have no
+official single-dataset checkpoints, and multi-dataset mixes (e.g. models
+trained on SNLI+MNLI+FEVER+ANLI together) are **deliberately not used** -
+they would violate the project's dataset-separation principle.
+
+## ➕ Adding a Model or Dataset
+
+Drop one YAML into `models/` or `datasets/` - the runners discover it
+automatically (`list_model_keys()` / `list_dataset_keys()`), and a matching
+Step-1 combination folder is all that is still needed.
+
+Example - reading a merged config:
+
+```python
+from common.config_loader import load_config
+cfg = load_config("BART-large", "MNLI")
+cfg["pooling"]                  # 'eos'   (model file)
+cfg["training"]["batch_size"]   # 16      (model override)
+cfg["training"]["epochs"]       # 3       (base survives the merge)
+cfg["splits"]["test"]           # 'validation_mismatched' (dataset file)
+```

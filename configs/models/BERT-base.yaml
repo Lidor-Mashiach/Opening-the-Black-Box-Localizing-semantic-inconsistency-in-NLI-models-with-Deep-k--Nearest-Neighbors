@@ -1,0 +1,8 @@
+# BERT-base - the smallest model in the study (12 layers, dim 768).
+model_key: BERT-base
+hf_id: bert-base-uncased
+pooling: cls                  # representation = first ([CLS]) token, every layer
+
+# No OFFICIAL single-dataset NLI checkpoint exists for BERT-base; community
+# uploads have unreliable id2label naming. Train all three datasets locally
+# (Step-1) - it is also the cheapest of the four models to fine-tune.

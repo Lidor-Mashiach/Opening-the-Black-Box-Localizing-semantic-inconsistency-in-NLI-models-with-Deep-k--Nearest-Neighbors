@@ -1,0 +1,15 @@
+# BART-large (encoder-decoder, 12+12 layers, dim 1024).
+# For sequence classification BART pools the final (eos) token, and its
+# hidden states are the DECODER layer outputs - handled by pooling: eos.
+model_key: BART-large
+hf_id: facebook/bart-large
+pooling: eos                  # representation = last non-padding token, every layer
+training:
+  batch_size: 16
+  learning_rate: 1.0e-5
+
+# Optional published checkpoint: Facebook's official BART-large fine-tuned on
+# MNLI (~89.9/90.0 m/mm acc) - the best published fit for MNLI.
+# No official single-dataset SNLI/ANLI checkpoints - train those locally.
+nli_checkpoints:
+  MNLI: facebook/bart-large-mnli

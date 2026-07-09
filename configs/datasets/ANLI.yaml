@@ -1,0 +1,12 @@
+# ANLI - Adversarial NLI (Nie et al., 2020). Built adversarially. Hardest.
+dataset_key: ANLI
+hf_id: facebook/anli
+dir: ANLI-Adversarial_NLI
+splits:
+  train: train
+  validation: dev
+  test: test
+rounds: [r1, r2, r3]                  # HF split names are e.g. train_r1
+notes: >
+  The three adversarial rounds are concatenated into one dataset; a 'round'
+  column is kept so per-round breakdowns remain possible.

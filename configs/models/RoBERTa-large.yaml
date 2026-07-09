@@ -1,0 +1,15 @@
+# RoBERTa-large (24 layers, dim 1024).
+model_key: RoBERTa-large
+hf_id: roberta-large
+pooling: cls                  # representation = first (<s>) token, every layer
+training:
+  batch_size: 16              # large model - smaller batches
+  learning_rate: 1.0e-5
+
+# Optional: skip local fine-tuning for a dataset by using a published
+# single-dataset checkpoint (predictions auto-remap via its id2label).
+# FacebookAI's official RoBERTa-large fine-tuned on MNLI (~90.2 matched acc)
+# is the best published fit for MNLI. No official single-dataset SNLI/ANLI
+# checkpoints exist - train those locally (Step-1).
+nli_checkpoints:
+  MNLI: FacebookAI/roberta-large-mnli

@@ -1,0 +1,15 @@
+# DeBERTa-large (24 layers, dim 1024).
+# The anchor paper uses DeBERTa-large (v1). If you prefer v3, change hf_id to
+# microsoft/deberta-v3-large - nothing else in the pipeline changes.
+model_key: DeBERTa-large
+hf_id: microsoft/deberta-large
+pooling: cls
+training:
+  batch_size: 16
+  learning_rate: 1.0e-5
+
+# Optional published checkpoint: Microsoft's official DeBERTa-large fine-tuned
+# on MNLI (~91.3/91.1 m/mm acc) - the best published fit for MNLI.
+# No official single-dataset SNLI/ANLI checkpoints - train those locally.
+nli_checkpoints:
+  MNLI: microsoft/deberta-large-mnli

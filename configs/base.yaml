@@ -1,0 +1,63 @@
+# =====================================================================
+# Global defaults for every experiment.
+# Merge order (later wins, nested keys merge deep):
+#   configs/base.yaml  ->  configs/models/<MODEL>.yaml  ->  configs/datasets/<DATASET>.yaml
+# =====================================================================
+
+seed: 42
+
+labels:                    # HuggingFace convention for SNLI / MNLI / ANLI
+  0: entailment
+  1: neutral
+  2: contradiction
+
+dknn:
+  k_values: [5, 10, 20, 50]   # candidate K values; the winner is chosen per
+                              # (model, dataset) pair on the validation portion
+  val_fraction: 0.2           # share of paraphrased pairs reserved for K selection
+
+paraphrases:
+  per_hypothesis: 5           # verified paraphrases kept per hypothesis (PA / MERGE needs ~5)
+  candidates_per_hypothesis: 10   # raw candidates generated BEFORE verification
+  # Generator: the leading open paraphraser on the HF Hub (T5-base fine-tuned
+  # on 6.3M ChatGPT paraphrase pairs); prompt + decoding follow its model card.
+  generator_model: humarin/chatgpt_paraphraser_on_T5_base
+  generator_prompt_prefix: "paraphrase: "
+  generation_batch_size: 8        # hypotheses per generation batch
+  # Verifier: the strongest public NLI model on the Hub (DeBERTa-v3-large,
+  # 885K NLI pairs: MNLI+FEVER+ANLI+LingNLI+WANLI; 91.2% MNLI-m, SOTA ANLI).
+  # A candidate is kept only if hypothesis<->candidate entail EACH OTHER.
+  verifier_model: MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli
+
+sampling:
+  # The full SNLI/MNLI train sets are huge; storing every hypothesis at every
+  # layer is not feasible (and not needed for k-NN). Both caps are seeded and
+  # deterministic. Set to null to disable.
+  max_bank_examples: 20000    # cap on the DkNN representation bank
+  eval_sample_size: 3000      # hypotheses that receive paraphrases and enter the test
+
+training:
+  epochs: 3
+  batch_size: 32
+  learning_rate: 2.0e-5
+  max_seq_len: 128
+  fp16: auto                  # auto = use fp16 only when CUDA is available
+
+encoding:
+  batch_size: 64
+  dtype: float16              # layer representations are stored as float16
+
+tuning:                       # Optuna hyper-parameter search (tuning/ directory)
+  n_trials: 20                # trials per (model, dataset) study; resumable via sqlite
+  train_subsample: 80000      # seeded train rows per trial (speed); null = full train set
+  val_subsample: 5000         # seeded validation rows for the objective; null = all
+  # Objective (maximize): validation accuracy of the fine-tuned NLI classifier.
+  # Search space - one entry per tuned feature:
+  search_space:
+    learning_rate: {low: 5.0e-6, high: 5.0e-5, log: true}   # log-uniform
+    weight_decay:  {low: 0.0, high: 0.1}                     # uniform
+    warmup_ratio:  {low: 0.0, high: 0.2}                     # uniform
+    epochs:        {low: 2, high: 3}                         # integer
+    batch_size:                        # categorical, by the model's default batch
+      base_models: [16, 32]            # models whose default batch is 32 (BERT-base)
+      large_models: [8, 16]            # the three large models (default batch 16)

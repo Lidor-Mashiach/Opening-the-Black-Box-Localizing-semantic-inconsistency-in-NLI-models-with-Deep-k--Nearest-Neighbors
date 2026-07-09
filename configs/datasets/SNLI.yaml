@@ -1,0 +1,10 @@
+# SNLI - Stanford NLI (Bowman et al., 2015). Image-caption premises. Easiest.
+dataset_key: SNLI
+hf_id: stanfordnlp/snli
+dir: SNLI-Stanford_NLI
+splits:
+  train: train
+  validation: validation
+  test: test
+notes: >
+  Rows with label -1 (no gold-label consensus) are dropped at load time.

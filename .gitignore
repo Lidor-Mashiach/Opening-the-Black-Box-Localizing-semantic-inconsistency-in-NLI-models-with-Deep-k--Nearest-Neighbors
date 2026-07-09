@@ -1,0 +1,42 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---------- Heavy, fully-reproducible artifacts ----------
+# fine-tuned checkpoints (Step-1)
+**/results/checkpoints/
+*.safetensors
+*.pt
+*.ckpt
+
+# layer-wise representation banks (Step-1c / Step-2)
+Datasets/Encoded_Datasets/**/*.npz
+
+# raw dataset dumps (re-download with Datasets/download_datasets.py)
+Datasets/*/raw/*
+!Datasets/*/raw/.keep
+
+# per-model filtered subsets (rebuilt by Step-1b; can be large)
+Datasets/*/filtered/*/*.csv
+
+# ---------- Caches / tools ----------
+.cache/
+wandb/
+.huggingface/
+
+# ---------- OS / editors ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ---------- Tuning artifacts ----------
+tuning/outputs/*
+!tuning/outputs/.keep
+tuning/results/**/optuna.db
+tuning/results/**/trial_tmp/
