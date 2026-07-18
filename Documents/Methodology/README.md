@@ -1,10 +1,10 @@
-# 📐 Methodology
+# Methodology
 
 `Project_Subject_and_Methodology.pdf` - the full research design (Hebrew).
 This document is the source of truth for the pipeline; every rule in the code
 traces back to it.
 
-## 📄 What It Defines
+## What It Defines
 
 | Section | Content |
 |---------|---------|

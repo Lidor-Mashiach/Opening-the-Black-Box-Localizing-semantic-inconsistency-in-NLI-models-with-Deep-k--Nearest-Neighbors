@@ -1,10 +1,10 @@
-# 📖 Literature Review - The 14 Papers
+# Literature Review - The 14 Papers
 
 Index of every work the research builds on, with its role in the project.
 Drop the paper PDFs into this folder (the `.keep` file just preserves it
 until then).
 
-## 📄 Foundations & Datasets
+## Foundations & Datasets
 
 | # | Paper | Venue | Role | Link |
 |---|-------|-------|------|------|
@@ -12,7 +12,7 @@ until then).
 | 2 | Williams et al. - *A Broad-Coverage Challenge Corpus...* (MNLI) | NAACL-HLT 2018 | Dataset (medium) | [arXiv:1704.05426](https://arxiv.org/abs/1704.05426) |
 | 3 | Nie et al. - *Adversarial NLI* (ANLI) | ACL 2020 | Dataset (hardest) | [arXiv:1910.14599](https://arxiv.org/abs/1910.14599) |
 
-## 📄 The Problem - Fragility of NLI Models
+## The Problem - Fragility of NLI Models
 
 | # | Paper | Venue | Role | Link |
 |---|-------|-------|------|------|
@@ -22,7 +22,7 @@ until then).
 | 7 | Naik et al. - *Stress Test Evaluation for NLI* | COLING 2018 | Stress-test failures | [arXiv:1806.00692](https://arxiv.org/abs/1806.00692) |
 | 8 | Richardson et al. - *Probing NLI Models through Semantic Fragments* | AAAI 2020 | Basic-logic failures | [arXiv:1909.07521](https://arxiv.org/abs/1909.07521) |
 
-## 📄 Output-Level Consistency Metrics
+## Output-Level Consistency Metrics
 
 | # | Paper | Venue | Role | Link |
 |---|-------|-------|------|------|
@@ -30,7 +30,7 @@ until then).
 | 10 | Zgreaban, Deoskar & Abzianidze - *MERGE* | arXiv 2025 | PA metric; SNLI variant generation | [arXiv:2510.24295](https://arxiv.org/abs/2510.24295) |
 | 11 | Wu & Last - *Transitive Self-Consistency Evaluation of NLI Models* | EMNLP 2025 | Consistency without gold labels (context) | pp. 22626-22642 |
 
-## 📄 The Method - Inside the Model
+## The Method - Inside the Model
 
 | # | Paper | Venue | Role | Link |
 |---|-------|-------|------|------|

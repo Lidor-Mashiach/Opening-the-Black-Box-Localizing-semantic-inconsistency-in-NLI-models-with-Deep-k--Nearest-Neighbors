@@ -1,4 +1,4 @@
-# 📋 Comparison Table - Datasets & Eval Metrics
+# Comparison Table - Datasets & Eval Metrics
 
 `DataSets_and_Eval_Metrics.xlsx` - the literature comparison matrix: for
 every reviewed paper, which models it tested, which datasets it checked,
@@ -6,7 +6,7 @@ which new dataset it introduced (if any), and which evaluation metrics it
 used. This table is where the project's model / dataset / metric choices
 were made.
 
-## 🎨 Color Legend
+## Color Legend
 
 | Highlight | Meaning |
 |-----------|---------|

@@ -27,8 +27,10 @@ OUTPUT
     tuning/results/<COMBO>/trials.csv         full trial history
     configs/tuned/<COMBO>.yaml                training overlay picked up
                                               automatically by load_config();
-                                              rerun the pipeline with --force
-                                              to retrain with these values.
+                                              To retrain with these values:
+                                              delete the combination's
+                                              results/checkpoints/ and rerun
+                                              the pipeline.
 """
 import sys
 from pathlib import Path
@@ -40,10 +42,12 @@ import numpy as np
 import optuna
 import torch
 import yaml
-from transformers import (AutoModelForSequenceClassification,
+from transformers import (AutoModelForSequenceClassification, AutoTokenizer,
                           DataCollatorWithPadding, Trainer, TrainingArguments)
 
 from common import data_loading, model_utils
+from common.gpu import resolve_device
+from common.logging_utils import log
 from common.config_loader import CONFIGS_DIR, combo_name, load_config
 
 RESULTS_ROOT = REPO_ROOT / "tuning" / "results"
@@ -83,10 +87,7 @@ def run_study(model_key, dataset_key, n_trials=None):
     results_dir = RESULTS_ROOT / combo
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    device = model_utils.get_device()
-    print(f"[tuning] {combo} | device: {device}"
-          + (f" ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else
-             "  (no CUDA GPU detected - tuning on CPU will be very slow)"))
+    device = resolve_device(f"Optuna study {combo}")
 
     # data prepared ONCE, reused by every trial
     train = _subsample(data_loading.load_nli(cfg, "train"),
@@ -95,7 +96,8 @@ def run_study(model_key, dataset_key, n_trials=None):
                      cfg["tuning"]["val_subsample"], cfg["seed"] + 1)
     print(f"[tuning] train subsample: {len(train)}, validation subsample: {len(val)}")
 
-    _, tokenizer, _ = model_utils.load_model_and_tokenizer(cfg)  # tokenizer only
+    backbone = str(model_utils.ensure_raw_backbone(cfg))   # into Models/raw/<MODEL>/
+    tokenizer = AutoTokenizer.from_pretrained(backbone)
 
     def tokenize(batch):
         return tokenizer(batch["premise"], batch["hypothesis"], truncation=True,
@@ -107,13 +109,47 @@ def run_study(model_key, dataset_key, n_trials=None):
     collator = DataCollatorWithPadding(tokenizer)
     val_labels = np.asarray(val["label"])
 
+    tuned_dir = CONFIGS_DIR / "tuned"
+    tuned_path = tuned_dir / f"{combo}.yaml"
+
+    def write_tuned_overlay(params, accuracy, n_done):
+        """Persist the best hyper-parameters to the exact file train reads.
+        Called the moment a new best appears, so a preempted job (golden
+        ticket) always leaves the best-so-far already in place - no
+        checkpoints needed."""
+        tuned_dir.mkdir(parents=True, exist_ok=True)
+        overlay = {"training": {
+            "learning_rate": float(params["learning_rate"]),
+            "batch_size": int(params["batch_size"]),
+            "epochs": int(params["epochs"]),
+            "weight_decay": float(params["weight_decay"]),
+            "warmup_ratio": float(params["warmup_ratio"]),
+        }}
+        tmp = tuned_path.with_suffix(".yaml.tmp")
+        with open(tmp, "w") as f:
+            f.write(f"# Written by tuning/run_tuning.py (Optuna) - best so far "
+                    f"after {n_done} trial(s),\n# validation accuracy "
+                    f"{accuracy:.4f}. Read automatically by load_config().\n"
+                    f"# Updated live on every improvement, so an interrupted "
+                    f"study always leaves the best here.\n")
+            yaml.safe_dump(overlay, f, sort_keys=False)
+        tmp.replace(tuned_path)     # atomic
+
+    def on_new_best(study, trial):
+        if study.best_trial.number == trial.number:
+            n_done = len([x for x in study.trials if x.state.is_finished()])
+            write_tuned_overlay(trial.params, trial.value, n_done)
+            log("SELECT-K", f"new best: validation accuracy {trial.value:.4f} "
+                f"-> saved to {tuned_path.relative_to(REPO_ROOT)}",
+                model_key, dataset_key)
+
     def objective(trial):
         params = _suggest_params(trial, cfg)
         print(f"[tuning] trial {trial.number}: {params}")
         torch.manual_seed(cfg["seed"])
         np.random.seed(cfg["seed"])
         model = AutoModelForSequenceClassification.from_pretrained(
-            cfg["hf_id"], num_labels=model_utils.NUM_LABELS).to(device)
+            backbone, num_labels=model_utils.NUM_LABELS).to(device)
         args = TrainingArguments(
             output_dir=str(results_dir / "trial_tmp"),
             num_train_epochs=params["epochs"],
@@ -151,7 +187,7 @@ def run_study(model_key, dataset_key, n_trials=None):
     print(f"[tuning] study '{combo}': {finished} finished trials, "
           f"{remaining} remaining (target {target})")
     if remaining:
-        study.optimize(objective, n_trials=remaining)
+        study.optimize(objective, n_trials=remaining, callbacks=[on_new_best])
 
     best = study.best_trial
     print(f"[tuning] BEST: accuracy {best.value:.4f} with {best.params}")
@@ -162,21 +198,11 @@ def run_study(model_key, dataset_key, n_trials=None):
                         "best_params": best.params}, f, sort_keys=False)
     study.trials_dataframe().to_csv(results_dir / "trials.csv", index=False)
 
-    tuned_dir = CONFIGS_DIR / "tuned"
-    tuned_dir.mkdir(parents=True, exist_ok=True)
-    overlay = {"training": {
-        "learning_rate": float(best.params["learning_rate"]),
-        "batch_size": int(best.params["batch_size"]),
-        "epochs": int(best.params["epochs"]),
-        "weight_decay": float(best.params["weight_decay"]),
-        "warmup_ratio": float(best.params["warmup_ratio"]),
-    }}
-    tuned_path = tuned_dir / f"{combo}.yaml"
-    with open(tuned_path, "w") as f:
-        f.write(f"# Written by tuning/run_tuning.py (Optuna) - best of "
-                f"{len(study.trials)} trials,\n# validation accuracy "
-                f"{best.value:.4f}. Picked up automatically by load_config();\n"
-                f"# rerun the pipeline with --force to retrain with these values.\n")
-        yaml.safe_dump(overlay, f, sort_keys=False)
-    print(f"[tuning] tuned overlay written -> {tuned_path}")
+    # the overlay is already on disk (written live by on_new_best); make sure
+    # it reflects the final best even if the very first trial was the best.
+    n_done = len([x for x in study.trials if x.state.is_finished()])
+    write_tuned_overlay(best.params, best.value, n_done)
+    log("SELECT-K", f"tuning complete - best overlay at "
+        f"{tuned_path.relative_to(REPO_ROOT)} (validation accuracy "
+        f"{best.value:.4f})", model_key, dataset_key)
     return best

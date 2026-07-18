@@ -35,17 +35,53 @@ def prediction_remap(model):
     return None
 
 
-def get_device():
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def get_device(context="model loading"):
+    """Central GPU detection - loud + actionable (see common/gpu.py)."""
+    from .gpu import resolve_device
+    return resolve_device(context)
+
+
+def ensure_raw_backbone(cfg):
+    """Make sure the pretrained backbone is present INSIDE the project, at
+    Models/raw/<MODEL>/, and return that local path.
+
+    First call on a machine: download the HF weights (config + tokenizer +
+    safetensors) straight into the project folder. Every later call: the
+    files are already there, so nothing is downloaded again. The HuggingFace
+    home cache is never used - everything the code needs lives in the project
+    (heavy weights are kept out of git by .gitignore, not by living outside
+    the repo).
+    """
+    from .config_loader import raw_backbone_dir
+    from .logging_utils import log
+    local = raw_backbone_dir(cfg)
+    marker = local / "config.json"
+    if marker.exists():
+        log("TRAIN", f"backbone already in the project at {local} - "
+            f"no download needed", cfg.get("model_key"), cfg.get("dataset_key"))
+        return local
+    local.mkdir(parents=True, exist_ok=True)
+    log("TRAIN", f"downloading pretrained backbone '{cfg['hf_id']}' from "
+        f"HuggingFace into the project -> {local}",
+        cfg.get("model_key"), cfg.get("dataset_key"))
+    AutoTokenizer.from_pretrained(cfg["hf_id"]).save_pretrained(local)
+    AutoModelForSequenceClassification.from_pretrained(
+        cfg["hf_id"], num_labels=NUM_LABELS).save_pretrained(local)
+    return local
 
 
 def load_model_and_tokenizer(cfg, checkpoint=None):
     """Load tokenizer + 3-way classification head.
 
     checkpoint : path to a fine-tuned model directory (Step-1 output).
-                 When None, the base pre-trained weights are loaded (training).
+                 When None, the base backbone is loaded FROM WITHIN THE
+                 PROJECT (Models/raw/<MODEL>/), downloading it there once if
+                 absent - never from the HF home cache.
     """
-    source = str(checkpoint) if checkpoint is not None else cfg["hf_id"]
+    if checkpoint is not None:
+        source = str(checkpoint)
+    else:
+        source = str(ensure_raw_backbone(cfg))
     tokenizer = AutoTokenizer.from_pretrained(source)
     model = AutoModelForSequenceClassification.from_pretrained(source, num_labels=NUM_LABELS)
     device = get_device()

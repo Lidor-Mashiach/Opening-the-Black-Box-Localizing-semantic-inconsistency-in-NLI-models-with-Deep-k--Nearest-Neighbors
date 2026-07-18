@@ -2,28 +2,28 @@
 
 Thin, per-combination wrappers. All real logic lives in
 [`Research-Pipeline/common/`](../../../common/README.md); these scripts only pin
-`MODEL_KEY = "BART-large"`, `DATASET_KEY = "MNLI"` and call it. Configuration comes from
-[`configs/`](../../../../../configs) (base -> model -> dataset -> tuned merge).
+`MODEL_KEY = "BART-large"`, `DATASET_KEY = "MNLI"`. Configuration comes from
+[`configs/`](../../../../configs) (base -> model -> dataset -> tuned merge).
 
-## Run Order
+## Run Order (what `run.py` does, in order)
 
-| # | Script | What it does | Output |
-|---|--------|--------------|--------|
-| 1 | `train.py` | Fine-tune BART-large on the MNLI train split | `results/checkpoints/final/`, `results/train_metrics.json` |
-| 2 | `build_filtered_dataset.py` | Keep only train rows the model got right | `Datasets/.../filtered/BART-large/train_correct.csv` |
-| 3 | `encode_hypotheses.py` | Store every kept hypothesis at every layer | `Datasets/Encoded_Datasets/BART-large/MNLI/hypotheses.npz` |
+| # | Stage | What it does | Output (all under `Runtime-Data/BART-large/MNLI/` unless noted) |
+|---|-------|--------------|-----------------------------------------------------------|
+| 0 | workspace wipe | Deletes this combination's Runtime-Data + Step-2/3/4 results from previous runs | fresh empty folder |
+| 1 | `train.py` | Detects the OFFICIAL published checkpoint and skips training entirely | *(no training - the published weights are used directly)* |
+| 2 | `build_filtered_dataset.py` | A NEW reduced COPY: only rows the model got right | `train_correct.csv` + `filter_stats.json` |
+| 3 | `encode_hypotheses.py` | Every kept hypothesis at every layer (pool hypotheses always included) | `hypotheses.npz` + meta |
 | 4 | `evaluate.py` | Baseline accuracy on validation + test | `results/baseline_eval.json` |
 
-Run everything in order with one command:
-
 ```bash
-python run.py             # resumable - finished stages are skipped
-python run.py --force     # redo everything (e.g. after Optuna tuning)
+python run.py
 ```
 
-Crash-resilience: training keeps one rolling epoch checkpoint and resumes
-from it automatically; every stage skips itself once its output exists.
+No flags. The original MNLI dataset and the paraphrase bank are **never
+modified**.
 
-This combination is pre-configured to use the OFFICIAL published checkpoint
-`facebook/bart-large-mnli` (see `configs/models/BART-large.yaml`) -
-`train.py` may be skipped entirely; stages 2-4 resolve it automatically.
+This combination uses the OFFICIAL published checkpoint
+`facebook/bart-large-mnli` automatically (declared in
+`configs/models/BART-large.yaml`) - `train.py` detects it, skips training, and
+stages 2-4 run against it. Its results therefore carry **zero seed-variance**
+across repeated runs, by construction.

@@ -1,9 +1,9 @@
-# 3️⃣ Step-3 - DkNN Credibility & Layer Distance
+# 3 Step-3 - DkNN Credibility & Layer Distance
 
 Opening the black box: the two internal-representation lenses, computed per
 (model, dataset) pair. Runs on CPU - pure NumPy over the encoded banks.
 
-## 🔄 Script Order
+## Script Order
 
 | # | Script | What it does | Output |
 |---|--------|--------------|--------|
@@ -11,7 +11,7 @@ Opening the black box: the two internal-representation lenses, computed per
 | 2 | `compute_credibility.py` | Credibility for every hypothesis (self-excluded) and every paraphrase, the drop, the data-derived anomalous-drop threshold, the scenario diagnosis, and the Phase-A key correlation on the held-out test portion | `credibility.csv`, `credibility_summary.json` |
 | 3 | `compute_layer_distances.py` | Direct cosine distance hypothesis vs paraphrase at every layer; consistent vs inconsistent profiles; threshold = consistent mean + std; first crossing layer -> region | `layer_distances.npz`, `layer_profile.csv`, `distance_summary.json` |
 
-## 🔑 Methodology Rules Enforced Here
+## Methodology Rules Enforced Here
 
 - **K per (model, dataset) pair**, chosen on validation - never global.
 - **Validation/test split is deterministic** (CRC32 of `pair_id`), so all
@@ -23,7 +23,7 @@ Opening the black box: the two internal-representation lenses, computed per
   `representation`; in between -> `within_normal_range` (classifier check
   happens in Step-4).
 
-## 🚀 Meta-Runner
+## Meta-Runner
 
 ```bash
 python run_step3.py

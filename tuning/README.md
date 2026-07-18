@@ -1,84 +1,91 @@
-# 🎛️ Tuning - Optuna Hyper-Parameter Search
+# tuning - Optuna Hyper-Parameter Search (BGU SLURM)
 
-One Optuna study per (model, dataset) combination - 12 studies total - each
-runnable as a single week-long GPU job on the BGU SLURM cluster, fully
-resumable after crashes or pre-emption.
+**What this produces: the best hyper-parameters, NOT a trained model.**
+Every trial fine-tunes on a seeded SUBSAMPLE only to *score* one parameter
+set; the study's product is `configs/tuned/<MODEL>__<DATASET>.yaml`. The real
+fine-tune happens later, inside the pipeline, using those values. Tuning is
+**optional** - without it the pipeline trains on the literature defaults in
+`configs/base.yaml` and says so in a loud yellow log line.
 
-## 🎯 Objective (per combination)
-
-**Maximize the validation accuracy of the fine-tuned NLI classifier** - the
-same quantity Step-1 reports, measured with the same shared `predict()`.
-Each trial fine-tunes on a seeded train subsample and scores a seeded
-validation subsample (`tuning.train_subsample` / `tuning.val_subsample` in
-`configs/base.yaml`), so a full 20-trial study fits one job.
-
-## 🔍 Search Space (one entry per feature)
-
-Defined declaratively in `configs/base.yaml -> tuning.search_space`:
-
-| Feature | Type / Range | Rationale |
-|---------|--------------|-----------|
-| `learning_rate` | float, **log**-uniform `5e-6 .. 5e-5` | Brackets the standard fine-tuning LRs; log scale because LR effects are multiplicative |
-| `weight_decay` | float, uniform `0 .. 0.1` | From no regularization up to the common AdamW ceiling |
-| `warmup_ratio` | float, uniform `0 .. 0.2` | No warmup up to 20% of steps |
-| `epochs` | int, `2 .. 3` | NLI fine-tuning saturates fast; >3 mostly overfits |
-| `batch_size` | categorical: `[16, 32]` for base models, `[8, 16]` for the large ones | Bounded by GPU VRAM; options centered on each model's default |
-
-Sampler: TPE (seeded). Direction: maximize.
-
-## 📁 Layout
-
-```
-tuning/
-├── optuna_search.py      # objective + study logic (see its docstring)
-├── run_tuning.py         # CLI: one study (sbatch mode) or all 12 sequentially
-├── run_all_sbatch.sh     # MAIN RUNNER: submits every uncommented sbatch job
-├── sbatch/               # 12 job files: tune_<MODEL>__<DATASET>.sbatch
-├── outputs/              # SLURM .out logs land here (%x-%J.out)
-└── results/<COMBO>/      # optuna.db (resumable), best_params.yaml, trials.csv
-```
-
-## 🔄 Where the Results Go
-
-The best trial is written to **`configs/tuned/<MODEL>__<DATASET>.yaml`** -
-`load_config()` merges it automatically on top of base -> model -> dataset.
-To retrain with the tuned values:
+## Submit (9 studies - one per TRAINABLE combination)
 
 ```bash
-python Research-Pipeline/run_pipeline.py --force
-```
-
-(`--force` cascades: retrain -> refilter -> re-encode -> regenerate
-paraphrases -> re-infer -> re-analyze.)
-
-## 🚀 Running on the BGU Cluster
-
-```bash
-# one-time, inside the repo on the cluster:
-conda create -n nli_dknn python=3.10
-conda activate nli_dknn
-pip install -r requirements.txt
-
-# edit the two CHANGE-ME lines in tuning/sbatch/*.sbatch
-#   (conda env name + repo path), then:
 cd tuning
-bash run_all_sbatch.sh        # comment out unwanted jobs in the JOBS list first
-squeue --me                   # monitor;  scancel <id> to cancel
+bash run_all_sbatch.sh        # comment out unwanted jobs first
+squeue --me                   # monitor        (cancel: scancel <job_id>)
 ```
 
-Every job: `--partition main`, `--time 6-23:59:00` (just under the 7-day
-cap), `--gpus=1`, `--mem=32G`, live logs via `PYTHONUNBUFFERED`. GPU/CPU is
-auto-detected in code (`torch.cuda.is_available()`) - the same scripts run
-locally without SLURM:
+**Nine jobs, not twelve:** the three large-model MNLI combinations use the
+labs' official published checkpoints and are never trained, so they are not
+tuned. Each job is self-contained - it downloads its backbone from the Hub and
+fine-tunes on a subsample to score hyper-parameters; it needs nothing
+pre-existing.
 
-```bash
-python tuning/run_tuning.py --model BERT-base --dataset SNLI
-```
+`run_all_sbatch.sh` copies the `.sbatch` files to your cluster scripts folder
+and submits them from there; the files carry absolute paths:
 
-## 🛟 Crash Safety
+| Path | Set to |
+|------|--------|
+| sbatch files deployed to | `/home/lidorma/sbatches_and_output_files/NLU-Scripts/sbatch-files/` |
+| job logs (`%x-%J.out`) | `/home/lidorma/sbatches_and_output_files/NLU-Scripts/output-files/` |
+| repo (`cd` target) | `/home/lidorma/projects/NLU-Project` |
+| conda env | `nlu_env` |
 
-| Layer | Mechanism |
-|-------|-----------|
-| Optuna study | sqlite storage + `load_if_exists` - resubmit and it continues from the next trial |
-| Step-1 full training | rolling epoch checkpoint + `resume_from_checkpoint` (see Step-1 README) |
-| Every pipeline stage | skips itself when its output already exists |
+Both folders are created automatically. If your layout differs, edit the
+constants at the top of `tuning/build_sbatch.py` and run
+`python tuning/build_sbatch.py` (rewrites all 9 files consistently), and
+update the two paths at the top of `run_all_sbatch.sh`.
+
+## Job Resources - and Why
+
+| Setting | BERT-base | Large models | Reason |
+|---------|-----------|--------------|--------|
+| `--gpus` | `1` (any GPU) | `rtx_3090:1` (24GB) | Fine-tuning is a GPU task. A large-model trial peaks at ~9-12GB VRAM (fp32 weights + AdamW states + fp16 activations at batch 16 / seq 128) -> a 24GB-class card; BERT-base needs < 6GB -> any GPU. Requesting the type via `--gpus=<type>:1` is the BGU-documented way (no `--constraint` needed) |
+| `--mem` | 16G | 32G | System RAM (dataset + tokenization + dataloader workers), not VRAM |
+| CPUs | (auto) | (auto) | Asking for a GPU already allocates 4-6 CPUs - no `--cpus-per-task` needed |
+| `--time 6-23:59:00` |  |  | The effective 7-day maximum, one minute under the cap so submission is never rejected |
+| `--mail-type=END,FAIL` |  |  | Email when a study finishes or fails |
+
+Hit the 7-day wall mid-study? Submit that job again - `run_tuning.py` (the
+code, not the job) resumes the sqlite study from the next trial. There is no
+`--requeue`: on `main` no one preempts you, and the resume logic lives in the
+code, so a fresh submission simply continues.
+
+## The Search Space (`configs/base.yaml` -> `tuning:`)
+
+Objective: **maximize validation accuracy** of the fine-tuned NLI classifier,
+on a seeded validation subsample. Every range is the standard fine-tuning
+range from the BERT / RoBERTa / DeBERTa papers - wide enough to matter,
+narrow enough not to waste GPU-days on values nobody uses.
+
+| Parameter | Range | Why |
+|-----------|-------|-----|
+| `learning_rate` | 5e-6 .. 5e-5, **log**-uniform | The one parameter that dominates transformer fine-tuning. Log scale because the useful values are multiplicative (1e-5 vs 2e-5 matters; 3.1e-5 vs 3.2e-5 does not). Large models like the low end, BERT-base the high end - the search finds each |
+| `weight_decay` | 0.0 .. 0.1 | BERT used 0.01, RoBERTa 0.1 - the whole published span |
+| `warmup_ratio` | 0.0 .. 0.2 | RoBERTa 0.06, BERT 0.1; stabilizes early large-model steps |
+| `epochs` | 2 .. 3 | The published fine-tuning window; more overfits NLI |
+| `batch_size` | BERT-base [16, 32] / large [8, 16] | Bounded by VRAM at seq 128 |
+
+| Knob | Value | Meaning |
+|------|-------|---------|
+| `n_trials` | 40 | ~1.5-2.5h per large-model trial -> fits the 7-day window |
+| `train_subsample` | 80000 | Seeded rows per trial - the ranking of parameter sets is what matters, not the last accuracy decimal |
+| `val_subsample` | 5000 | Seeded validation rows for the objective |
+
+Not tuned on purpose: `max_seq_len` (128 is the NLI standard - a design
+choice, not a knob) and `seed` (tuning a seed would be tuning noise).
+
+## Outputs
+
+| File | Content |
+|------|---------|
+| `configs/tuned/<COMBO>.yaml` | **The product**: the winning `training:` block. The pipeline's config merge picks it up automatically - nothing to copy by hand |
+| `tuning/results/<COMBO>/optuna.db` | The sqlite study (resume lives here) |
+| `tuning/results/<COMBO>/best_params.yaml` | The best trial, human-readable, with its score |
+
+## After Tuning
+
+Nothing to do - the next `run_pipeline.py` run reads `configs/tuned/`
+automatically and logs `hyper-parameters: TUNED by Optuna (...)` in green.
+Every run fine-tunes fresh from the pretrained backbone anyway, so tuned
+values take effect immediately.

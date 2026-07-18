@@ -1,9 +1,7 @@
 """Step-1d: baseline accuracy of fine-tuned BERT-base on ANLI validation + test.
 
-Thin wrapper around common.evaluation - all logic is shared. Skips automatically when its
-output already exists; pass --force to redo (e.g. after Optuna tuning).
+Thin wrapper around common.evaluation - all logic is shared, nothing is duplicated.
 """
-import argparse
 import sys
 from pathlib import Path
 
@@ -16,8 +14,4 @@ MODEL_KEY = "BERT-base"
 DATASET_KEY = "ANLI"
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="redo even when the output already exists")
-    args = parser.parse_args()
-    evaluate_baseline(MODEL_KEY, DATASET_KEY, force=args.force)
+    evaluate_baseline(MODEL_KEY, DATASET_KEY)

@@ -1,10 +1,10 @@
-# 🎤 Presentation
+# Presentation
 
 `NLU_Final_Presentation.pdf` - the course presentation:
 **"Opening the Black Box: Localizing semantic inconsistency in NLI models
 with Deep k-Nearest Neighbors."**
 
-## 📄 Deck Outline
+## Deck Outline
 
 | Part | Content |
 |------|---------|

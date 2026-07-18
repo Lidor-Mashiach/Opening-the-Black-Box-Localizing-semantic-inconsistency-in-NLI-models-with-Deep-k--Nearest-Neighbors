@@ -1,10 +1,10 @@
-# 🅱️ Phase B - From Diagnosis to a Targeted Fix
+# Phase B - From Diagnosis to a Targeted Fix
 
 **Status: pending Phase A results.** This folder intentionally holds only
 this README (+ `.keep`); the implementation is derived from what Phase A's
 Credibility signal shows, per the methodology document.
 
-## 🔀 What Happens per Phase-A Scenario
+## What Happens per Phase-A Scenario
 
 | Phase-A verdict | Meaning | Phase-B action |
 |-----------------|---------|----------------|
@@ -12,7 +12,7 @@ Credibility signal shows, per the methodology document.
 | `representation` (credibility **rose** for the wrong label) | The model grouped certain phrasings with a wrong label | Report as a key finding; augmentation would have to *break* the wrong grouping, not just add data |
 | `classifier` (credibility unchanged, answers still flipped) | Same internal representation, different final decision | Classifier fine-tuning / regularization experiments; improvement is not expected |
 
-## 🔬 The Targeted-Augmentation Experiment (generalization case)
+## The Targeted-Augmentation Experiment (generalization case)
 
 1. **Select** only hypotheses whose original paraphrase showed an anomalous
    credibility drop (`anomalous_drop == 1` in Step-3's `credibility.csv`).
@@ -26,7 +26,7 @@ Credibility signal shows, per the methodology document.
    old representations are no longer valid.
 5. **Re-run Steps 2-4** and compare all metrics.
 
-## ⚖️ Two Mandatory Baselines
+## Two Mandatory Baselines
 
 | Baseline | Purpose |
 |----------|---------|

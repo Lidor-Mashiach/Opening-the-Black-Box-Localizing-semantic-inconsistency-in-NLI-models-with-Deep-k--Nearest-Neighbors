@@ -3,8 +3,9 @@
 Only (premise, hypothesis) rows the fine-tuned model classifies CORRECTLY on
 the train split continue to the experiment - so we later measure sensitivity
 to rephrasing, not ordinary mistakes. Every model therefore produces its own
-filtered dataset for every dataset; it is saved under
-Datasets/<dataset>/filtered/<MODEL>/train_correct.csv.
+filtered dataset for every dataset; it is saved as a NEW COPY under
+Runtime-Data/<MODEL>/<DATASET>/train_correct.csv - the original dataset in
+Datasets/ is never modified.
 """
 import json
 
@@ -14,18 +15,19 @@ import pandas as pd
 from . import data_loading, model_utils
 from .config_loader import (filtered_dir, load_config,
                             resolve_checkpoint, step1_results_dir)
+from .logging_utils import log
 
 
-def build_filtered_dataset(model_key, dataset_key, force=False):
+def build_filtered_dataset(model_key, dataset_key):
+    """Create the reduced COPY of the original dataset - correct rows only.
+
+    The original dataset is never modified: this writes a NEW file inside
+    the combination's Runtime-Data folder (wiped fresh at run start).
+    """
     cfg = load_config(model_key, dataset_key)
-    out_csv = filtered_dir(cfg) / "train_correct.csv"
-    if out_csv.exists() and not force:
-        print(f"[filter] SKIP {model_key} x {dataset_key}: {out_csv} exists "
-              f"(use --force after retraining)")
-        return None
     ckpt = resolve_checkpoint(cfg)
 
-    print(f"[filter] {model_key} on {dataset_key}")
+    log("FILTER", "building the reduced correct-only dataset copy", model_key, dataset_key)
     train = data_loading.load_nli(cfg, "train")
     train = data_loading.add_pair_ids(train, cfg, "train")
     model, tokenizer, device = model_utils.load_model_and_tokenizer(cfg, checkpoint=ckpt)
@@ -62,6 +64,7 @@ def build_filtered_dataset(model_key, dataset_key, force=False):
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "w") as f:
             json.dump(stats, f, indent=2)
-    print(f"[filter] kept {stats['kept_correct_rows']}/{stats['total_train_rows']} "
-          f"(train accuracy {stats['train_accuracy']:.4f})")
+    log("FILTER", f"kept {stats['kept_correct_rows']}/{stats['total_train_rows']} "
+        f"rows (train accuracy {stats['train_accuracy']:.4f}) -> {out_dir / 'train_correct.csv'}",
+        model_key, dataset_key)
     return df

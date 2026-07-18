@@ -1,9 +1,7 @@
-"""Step-1a: fine-tune RoBERTa-large on MNLI.
+"""Step-1a: fine-tune RoBERTa-large on MNLI (resumable; skips when finished).
 
-Thin wrapper around common.training - all logic is shared. Skips automatically when its
-output already exists; pass --force to redo (e.g. after Optuna tuning).
+Thin wrapper around common.training - all logic is shared, nothing is duplicated.
 """
-import argparse
 import sys
 from pathlib import Path
 
@@ -16,8 +14,4 @@ MODEL_KEY = "RoBERTa-large"
 DATASET_KEY = "MNLI"
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="redo even when the output already exists")
-    args = parser.parse_args()
-    fine_tune(MODEL_KEY, DATASET_KEY, force=args.force)
+    fine_tune(MODEL_KEY, DATASET_KEY)

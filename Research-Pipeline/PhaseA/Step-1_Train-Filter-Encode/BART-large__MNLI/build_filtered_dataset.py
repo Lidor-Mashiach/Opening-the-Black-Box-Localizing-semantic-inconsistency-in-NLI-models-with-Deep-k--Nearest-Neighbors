@@ -1,9 +1,7 @@
-"""Step-1b: keep only the MNLI train rows BART-large classifies correctly.
+"""Step-1b: reduced COPY of MNLI - only rows BART-large classifies correctly.
 
-Thin wrapper around common.filtering - all logic is shared. Skips automatically when its
-output already exists; pass --force to redo (e.g. after Optuna tuning).
+Thin wrapper around common.filtering - all logic is shared, nothing is duplicated.
 """
-import argparse
 import sys
 from pathlib import Path
 
@@ -16,8 +14,4 @@ MODEL_KEY = "BART-large"
 DATASET_KEY = "MNLI"
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="redo even when the output already exists")
-    args = parser.parse_args()
-    build_filtered_dataset(MODEL_KEY, DATASET_KEY, force=args.force)
+    build_filtered_dataset(MODEL_KEY, DATASET_KEY)

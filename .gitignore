@@ -14,15 +14,26 @@ env/
 *.pt
 *.ckpt
 
-# layer-wise representation banks (Step-1c / Step-2)
-Datasets/Encoded_Datasets/**/*.npz
+# ALL run-derived data (reduced copies, encodings, per-model paraphrase
+# copies) - wiped and rebuilt every run; only the README is tracked
+Runtime-Data/*
+!Runtime-Data/README.md
+
+# ---------- Models: backbones IN the project, weights kept local ----------
+# The pretrained backbones downloaded from HuggingFace live in the project,
+# but the weights are heavy - keep them local. The folder + its README are
+# tracked so a fresh clone has the structure; the tuned CONFIGS
+# (configs/tuned/, light) ARE committed so no machine needs to re-run Optuna.
+Models/raw/*
+!Models/raw/.gitkeep
 
 # raw dataset dumps (re-download with Datasets/download_datasets.py)
 Datasets/*/raw/*
 !Datasets/*/raw/.keep
 
-# per-model filtered subsets (rebuilt by Step-1b; can be large)
-Datasets/*/filtered/*/*.csv
+# paraphrase-bank working artifacts (the bank itself IS tracked)
+Datasets/*/paraphrases/paraphrase_bank.backup.csv
+Datasets/*/paraphrases/paraphrase_bank.tmp.csv
 
 # ---------- Caches / tools ----------
 .cache/
@@ -36,7 +47,11 @@ Thumbs.db
 .vscode/
 
 # ---------- Tuning artifacts ----------
-tuning/outputs/*
-!tuning/outputs/.keep
 tuning/results/**/optuna.db
-tuning/results/**/trial_tmp/
+
+# ---------- Research results ----------
+# Per-run archives + the cross-run summary ARE tracked by default, so a
+# GitHub push captures your findings. They are small (CSVs + PNGs). To keep
+# them local instead, uncomment:
+# Research-Pipeline/PhaseA/Step-4_Consistency-and-Diagnosis/results/runs/
+# Research-Pipeline/PhaseA/Step-4_Consistency-and-Diagnosis/results/runs_summary.csv

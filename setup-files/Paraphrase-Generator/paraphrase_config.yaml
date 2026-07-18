@@ -1,0 +1,32 @@
+# =====================================================================
+# Configuration of the STANDALONE paraphrase-bank generator.
+# This is deliberately separate from configs/ - the bank is a one-time,
+# static asset; the pipeline only READS the finished banks and never
+# consults these knobs.
+# =====================================================================
+paraphrases:
+  # NOTE: the per-hypothesis quota and the dataset registry are GLOBALS at
+  # the top of generate_paraphrases.py (PARAPHRASES_PER_HYPOTHESIS, DATASETS)
+  # - edit them THERE. This file keeps generation/verification knobs only.
+  pool_size: 4000             # hypotheses sampled per DATASET (model-independent pool);
+                              # each model later uses only the ones IT classified
+                              # correctly (~90% -> ~3600)
+  candidates_per_hypothesis: 10   # raw candidates generated per round BEFORE the gates
+  max_generation_rounds: 8    # round 1 = diverse beam; rounds 2..N = FRESH nucleus
+                              # sampling (new seed + mild temperature ramp) until
+                              # EVERY hypothesis reaches the quota. Dropping is a
+                              # last-resort safety valve only - raise this for zero
+                              # drops at extra GPU cost
+  length_ratio:               # paraphrase word-count / hypothesis word-count must stay
+    min: 0.6                  # inside these bounds - length & complexity remain at the
+    max: 1.5                  # hypothesis's own level, per dataset
+  # Generator: the leading open paraphraser on the HF Hub (T5-base fine-tuned
+  # on 6.3M ChatGPT paraphrase pairs); prompt + decoding follow its model card.
+  generator_model: humarin/chatgpt_paraphraser_on_T5_base
+  generator_prompt_prefix: "paraphrase: "
+  generation_batch_size: 8        # hypotheses per generation batch
+  # Verifier: the strongest public NLI model on the Hub (DeBERTa-v3-large,
+  # 885K NLI pairs: MNLI+FEVER+ANLI+LingNLI+WANLI; 91.2% MNLI-m, SOTA ANLI).
+  # DOUBLE gate: (a) hypothesis <-> candidate entail each other;
+  #              (b) (premise, candidate) label == the gold label.
+  verifier_model: MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli

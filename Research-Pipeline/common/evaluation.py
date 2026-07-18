@@ -11,14 +11,11 @@ import numpy as np
 
 from . import data_loading, model_utils
 from .config_loader import load_config, resolve_checkpoint, step1_results_dir
+from .logging_utils import log
 
 
-def evaluate_baseline(model_key, dataset_key, force=False):
+def evaluate_baseline(model_key, dataset_key):
     cfg = load_config(model_key, dataset_key)
-    out_json = step1_results_dir(cfg) / "baseline_eval.json"
-    if out_json.exists() and not force:
-        print(f"[evaluate] SKIP {model_key} x {dataset_key}: {out_json} exists")
-        return None
     ckpt = resolve_checkpoint(cfg)
 
     model, tokenizer, device = model_utils.load_model_and_tokenizer(cfg, checkpoint=ckpt)
@@ -30,7 +27,8 @@ def evaluate_baseline(model_key, dataset_key, force=False):
         accuracy = float((preds == np.asarray(ds["label"])).mean())
         results[f"{split}_accuracy"] = accuracy
         results[f"{split}_examples"] = len(ds)
-        print(f"[evaluate] {split} accuracy: {accuracy:.4f} ({len(ds)} examples)")
+        log("EVAL", f"{split} accuracy: {accuracy:.4f} ({len(ds)} examples)",
+            model_key, dataset_key)
 
     out_dir = step1_results_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)

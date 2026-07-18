@@ -1,17 +1,19 @@
-# 4️⃣ Step-4 - Consistency Metrics & Joint Diagnosis
+# 4 Step-4 - Consistency Metrics & Joint Diagnosis
 
 The final read-out of Phase A: the four literature metrics on the outputs,
 and the combined verdict from the two internal lenses.
 
-## 🔄 Scripts
+## Scripts
 
 | Script | What it does | Output |
 |--------|--------------|--------|
 | `compute_consistency_metrics.py` | RFR + SFR (anchor paper), PC (Srikanth 2024), PA (MERGE) for every combination, via `eval_metrics/` | `results/consistency_metrics.csv` (one aggregated table) |
 | `diagnose.py` | Joins Step-3's credibility scenario with the layer-distance region into one verdict + a Phase-B recommendation, and draws the two presentation plots | `results/<COMBO>/diagnosis.json`, `layer_distance_profile.png`, `credibility_groups.png` |
 | `plot_overview.py` | Unified grid figures across ALL combinations: every distance profile side by side, and every low-vs-high credibility bar pair side by side | `results/layer_distance_overview.png`, `results/credibility_overview.png` |
+| `final_report.py` | The consolidated FINAL REPORT - every metric of every combination in one table: RFR/SFR/PC/PA, chosen K, the Phase-A key correlation, credibility scenario + verdict, distance crossing layer + region, signals agreement, low/high credibility-group shares | `results/final_report.csv` |
+| `archive_run.py` | Step-4e: archives THIS run (report + every plot) into `results/runs/run_<stamp>_seed_<seed>/`, then rewrites the cross-run statistics: per-metric `_mean`/`_std`/`_var`, `n_runs`, seed list, `signals_agree` agreement rate. Runs automatically at the end of every pipeline run | `results/runs/<run id>/`, `results/runs_summary.csv` |
 
-## 📊 The Two Presentation Plots (per combination)
+## The Two Presentation Plots (per combination)
 
 - **`layer_distance_profile.png`** - consistent vs inconsistent mean distance
   per layer, the data-derived threshold (consistent mean + std) and the
@@ -22,7 +24,7 @@ and the combined verdict from the two internal lenses.
   "Phase A: can we predict it in advance?" slide. The same numbers are stored
   in `diagnosis.json -> credibility_groups`.
 
-## 🔑 When the Two Signals Disagree
+## When the Two Signals Disagree
 
 Layer Distance asks **where the representations split** (which layer);
 Credibility asks **where the paraphrase lands** relative to the training
@@ -31,7 +33,7 @@ it is itself a finding: the inconsistency is multi-dimensional, with both the
 representation and the classifier contributing. `diagnosis.json` records this
 explicitly (`signals_agree` + note).
 
-## 🚀 Meta-Runner
+## Meta-Runner
 
 ```bash
 python run_step4.py

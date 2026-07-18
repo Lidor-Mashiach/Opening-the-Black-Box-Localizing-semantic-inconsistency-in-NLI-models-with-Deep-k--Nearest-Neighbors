@@ -26,7 +26,8 @@ def main(models, datasets):
             if not (encoded_dir(cfg) / "paraphrases.npz").exists():
                 print(f"[step-3] SKIP {model} x {dataset}: Step-2 output missing")
                 continue
-            print(f"\n===== Step-3 | {model} x {dataset} =====")
+            from common.logging_utils import banner
+            banner("STEP-3", "DkNN credibility + layer distances", model, dataset)
             for script in SCRIPTS:
                 cmd = [sys.executable, str(HERE / script),
                        "--model", model, "--dataset", dataset]
@@ -39,8 +40,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", default=None, help="comma-separated subset")
     parser.add_argument("--datasets", default=None, help="comma-separated subset")
-    parser.add_argument("--force", action="store_true",
-                        help="accepted for uniform pass-through; analysis always recomputes")
     args = parser.parse_args()
     models = args.models.split(",") if args.models else list_model_keys()
     datasets = args.datasets.split(",") if args.datasets else list_dataset_keys()

@@ -1,42 +1,59 @@
 #!/bin/bash
 ### =====================================================================
-### Main runner for the Optuna sbatch jobs - BGU SLURM cluster.
+### Deploy + submit the Optuna sbatch jobs - BGU SLURM cluster.
+###
+### NINE jobs, one per TRAINABLE model x dataset pair. The three large-model
+### MNLI combinations use the labs' official published checkpoints and are
+### NOT tuned, so they have no job here.
+###
+### Each job = ONE Optuna study -> configs/tuned/<MODEL>__<DATASET>.yaml
+### (best hyper-parameters, NOT trained weights - the pipeline trains later).
+###
+### The .sbatch files carry ABSOLUTE paths, so this script copies them to your
+### cluster scripts folder and submits them from there.
 ###
 ### Usage:
-###   1. Comment out (put # before) every job you do NOT want to submit.
-###   2. bash run_all_sbatch.sh
-###   3. Monitor with:  squeue --me      (cancel with: scancel <job_id>)
+###   1. (once) check the two paths below match your cluster layout.
+###   2. Comment out (put # before) any job you do NOT want to submit.
+###   3. bash run_all_sbatch.sh
+###   4. Monitor:  squeue --me        (cancel: scancel <job_id>)
 ###
-### Each job = one Optuna study for one model x dataset pair, up to ~7 days,
-### 1 GPU, fully resumable (resubmit after a crash and it continues).
-### Before the first submission, edit the CHANGE-ME lines inside the
-### .sbatch files (conda env name + repo path).
+### Hit the 7-day wall? Just submit that job again - run_tuning.py resumes the
+### sqlite study from the next trial, nothing is lost.
 ### =====================================================================
-cd "$(dirname "$0")"
+
+REPO_SBATCH="$(cd "$(dirname "$0")" && pwd)/sbatch"
+DEPLOY_DIR="/home/lidorma/sbatches_and_output_files/NLU-Scripts/sbatch-files"
+OUTPUT_DIR="/home/lidorma/sbatches_and_output_files/NLU-Scripts/output-files"
 
 JOBS=(
-  ### ---------------- BERT-base ----------------
-  "sbatch/tune_BERT-base__SNLI.sbatch"
-  "sbatch/tune_BERT-base__MNLI.sbatch"
-  "sbatch/tune_BERT-base__ANLI.sbatch"
-  ### ---------------- RoBERTa-large ----------------
-  "sbatch/tune_RoBERTa-large__SNLI.sbatch"
-  "sbatch/tune_RoBERTa-large__MNLI.sbatch"
-  "sbatch/tune_RoBERTa-large__ANLI.sbatch"
-  ### ---------------- DeBERTa-large ----------------
-  "sbatch/tune_DeBERTa-large__SNLI.sbatch"
-  "sbatch/tune_DeBERTa-large__MNLI.sbatch"
-  "sbatch/tune_DeBERTa-large__ANLI.sbatch"
-  ### ---------------- BART-large ----------------
-  "sbatch/tune_BART-large__SNLI.sbatch"
-  "sbatch/tune_BART-large__MNLI.sbatch"
-  "sbatch/tune_BART-large__ANLI.sbatch"
+  ### ---------------- BERT-base (all three datasets are trained) ----------------
+  "tune_BERT-base__SNLI.sbatch"
+  "tune_BERT-base__MNLI.sbatch"
+  "tune_BERT-base__ANLI.sbatch"
+  ### ---------------- RoBERTa-large (MNLI uses the official checkpoint) ----------------
+  "tune_RoBERTa-large__SNLI.sbatch"
+  "tune_RoBERTa-large__ANLI.sbatch"
+  ### ---------------- DeBERTa-large (MNLI uses the official checkpoint) ----------------
+  "tune_DeBERTa-large__SNLI.sbatch"
+  "tune_DeBERTa-large__ANLI.sbatch"
+  ### ---------------- BART-large (MNLI uses the official checkpoint) ----------------
+  "tune_BART-large__SNLI.sbatch"
+  "tune_BART-large__ANLI.sbatch"
 )
+
+mkdir -p "$DEPLOY_DIR" "$OUTPUT_DIR"
+echo "deploying sbatch files -> $DEPLOY_DIR"
+echo "job logs -> $OUTPUT_DIR/<job-name>-<job-id>.out"
+echo "----------------------------------------------------------------"
 
 submitted=0
 for job in "${JOBS[@]}"; do
+  cp "$REPO_SBATCH/$job" "$DEPLOY_DIR/$job" || exit 1
   echo "submitting: $job"
-  sbatch "$job" && submitted=$((submitted + 1))
+  sbatch "$DEPLOY_DIR/$job" && submitted=$((submitted + 1))
 done
+
 echo "----------------------------------------------------------------"
-echo "submitted $submitted job(s). Check the queue with:  squeue --me"
+echo "submitted $submitted job(s) (of 9 trainable combinations)."
+echo "monitor:  squeue --me"

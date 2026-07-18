@@ -19,14 +19,12 @@ STEP_RUNNERS = {
 }
 
 
-def main(steps, models, datasets, force=False):
+def main(steps, models, datasets):
     passthrough = []
     if models:
         passthrough += ["--models", models]
     if datasets:
         passthrough += ["--datasets", datasets]
-    if force:
-        passthrough += ["--force"]
     for step in steps:
         runner = STEP_RUNNERS[step]
         print(f"\n================ Phase A | Step {step} ================")
@@ -40,7 +38,5 @@ if __name__ == "__main__":
     parser.add_argument("--steps", default="1,2,3,4", help="e.g. 3,4")
     parser.add_argument("--models", default=None)
     parser.add_argument("--datasets", default=None)
-    parser.add_argument("--force", action="store_true",
-                        help="redo finished stages (retrain, re-encode, re-infer)")
     args = parser.parse_args()
-    main(args.steps.split(","), args.models, args.datasets, force=args.force)
+    main(args.steps.split(","), args.models, args.datasets)

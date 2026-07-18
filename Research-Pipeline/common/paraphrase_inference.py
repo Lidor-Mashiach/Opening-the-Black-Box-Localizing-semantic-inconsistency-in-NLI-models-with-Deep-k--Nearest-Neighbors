@@ -1,19 +1,24 @@
 """Step-2: run every (premise, paraphrase) pair through the fine-tuned model.
 
-Inputs  - Datasets/<dataset>/paraphrases/<MODEL>__paraphrases.csv with columns:
-              pair_id   : id of the source hypothesis (must exist in the bank)
-              premise   : the ORIGINAL premise (unchanged)
-              paraphrase: rewording of the hypothesis, SAME logical relation
-              label     : the gold label (= the hypothesis prediction, because
-                          only correctly-classified hypotheses enter)
-              para_idx  : optional 0..4 index (created here when absent)
-Outputs - Encoded_Datasets/<MODEL>/<DATASET>/paraphrases.npz  (per-layer reps)
+Input - the DATASET-level paraphrase bank
+    Datasets/<dataset>/paraphrases/paraphrase_bank.csv
+    (pair_id, premise, hypothesis, paraphrase, label, para_idx - EXACTLY
+    per_hypothesis rows per pooled hypothesis, model-independent), which is
+    intersected here with THIS model's correct-only set: only rows whose
+    pair_id appears in Runtime-Data/<MODEL>/<DATASET>/train_correct.csv
+    (the reduced copy built by Step-1) enter, so
+    "label == the model's hypothesis prediction" holds by construction and
+    every model is tested on the exact same paraphrases for shared hypotheses.
+
+Outputs - Runtime-Data/<MODEL>/<DATASET>/paraphrases_used.csv  (the per-model
+          COPY of the shared bank: bank intersect this model's correct set)
+        - Runtime-Data/<MODEL>/<DATASET>/paraphrases.npz  (per-layer reps)
         - Step-2 results/<COMBO>/paraphrase_predictions.csv   (predictions +
           consistent / strict-flip flags used by Steps 3-4)
 
-When the paraphrase CSV does not exist yet the step SKIPS gracefully - the
-acquisition protocol is documented in Datasets/<dataset>/paraphrases and in
-the root README ("Paraphrase Data Status").
+When the bank does not exist yet the step SKIPS gracefully - build it ONCE
+with setup-files/Paraphrase-Generator/generate_paraphrases.py (the main runner checks
+this up front and exits with the exact command).
 """
 import json
 
@@ -21,40 +26,58 @@ import numpy as np
 import pandas as pd
 
 from . import model_utils
-from .config_loader import (encoded_dir, load_config, resolve_checkpoint,
-                            paraphrases_csv, step_results_dir)
+from .config_loader import (encoded_dir, filtered_dir, load_config,
+                            paraphrase_bank_csv, resolve_checkpoint,
+                            step_results_dir)
+from .logging_utils import log
 
 STEP_DIRNAME = "Step-2_Paraphrase-Inference"
 REQUIRED_COLUMNS = ("pair_id", "premise", "paraphrase", "label")
 
 
-def run_paraphrase_inference(model_key, dataset_key, force=False):
+def run_paraphrase_inference(model_key, dataset_key):
     cfg = load_config(model_key, dataset_key)
-    done_npz = encoded_dir(cfg) / "paraphrases.npz"
-    done_csv = step_results_dir(STEP_DIRNAME, cfg) / "paraphrase_predictions.csv"
-    if done_npz.exists() and done_csv.exists() and not force:
-        print(f"[step-2] SKIP {model_key} x {dataset_key}: outputs exist "
-              f"(use --force after retraining or regenerating paraphrases)")
-        return True
-    csv_path = paraphrases_csv(cfg)
-    if not csv_path.exists():
-        print(f"[step-2] SKIP {model_key} x {dataset_key}: no paraphrase file at\n"
-              f"         {csv_path}\n"
-              f"         See Datasets/{cfg['dir']}/paraphrases/README.md for the "
-              f"acquisition protocol.")
+    bank_path = paraphrase_bank_csv(cfg)
+    if not bank_path.exists():
+        print(f"[step-2] SKIP {model_key} x {dataset_key}: no paraphrase bank at\n"
+              f"         {bank_path}\n"
+              f"         Build it once with setup-files/Paraphrase-Generator/generate_paraphrases.py "
+              f"(see Datasets/{cfg['dir']}/paraphrases/README.md).")
         return False
+    filtered_path = filtered_dir(cfg) / "train_correct.csv"
+    if not filtered_path.exists():
+        raise FileNotFoundError(f"missing {filtered_path} - run Step-1 "
+                                f"build_filtered_dataset.py first")
 
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(bank_path)
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
-        raise ValueError(f"{csv_path} is missing columns: {missing}")
+        raise ValueError(f"{bank_path} is missing columns: {missing}")
     if "para_idx" not in df.columns:
         df["para_idx"] = df.groupby("pair_id").cumcount()
+
+    # intersect the shared bank with THIS model's correct-only hypotheses
+    correct_ids = set(pd.read_csv(filtered_path, usecols=["pair_id"])["pair_id"]
+                      .astype(str).unique())
+    pool_hypotheses = df["pair_id"].nunique()
+    df = df[df["pair_id"].astype(str).isin(correct_ids)].reset_index(drop=True)
+    log("INFER", f"shared bank: {pool_hypotheses} hypotheses -> "
+        f"{df['pair_id'].nunique()} classified correctly by this model "
+        f"({len(df)} paraphrase rows enter)", model_key, dataset_key)
+
+    # materialize the per-model COPY of the paraphrase dataset (the shared
+    # bank in Datasets/ is never modified) - Runtime-Data/<M>/<D>/
+    used_csv = encoded_dir(cfg) / "paraphrases_used.csv"
+    used_csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(used_csv, index=False)
+    log("INFER", f"per-model paraphrase copy written -> {used_csv}",
+        model_key, dataset_key)
 
     ckpt = resolve_checkpoint(cfg)
     model, tokenizer, device = model_utils.load_model_and_tokenizer(cfg, checkpoint=ckpt)
 
-    print(f"[step-2] {model_key} on {dataset_key}: {len(df)} paraphrase rows")
+    log("INFER", f"running (premise, paraphrase) inference: {len(df)} rows",
+        model_key, dataset_key)
     preds = model_utils.predict(model, tokenizer, device,
                                 df["premise"].tolist(), df["paraphrase"].tolist(),
                                 cfg, desc="para-predict")
@@ -96,5 +119,6 @@ def run_paraphrase_inference(model_key, dataset_key, force=False):
     }
     with open(out_results / "inference_stats.json", "w") as f:
         json.dump(stats, f, indent=2)
-    print(f"[step-2] consistent share: {stats['consistent_share']:.4f}")
+    log("INFER", f"consistent share: {stats['consistent_share']:.4f}",
+        model_key, dataset_key)
     return True

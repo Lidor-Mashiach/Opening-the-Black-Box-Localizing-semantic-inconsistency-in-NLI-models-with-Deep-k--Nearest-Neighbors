@@ -1,25 +1,34 @@
-"""Meta-runner for BERT-base x MNLI: train -> filter -> encode -> evaluate, in order.
+"""Meta-runner for BERT-base x MNLI: clean workspace -> train -> filter -> encode -> evaluate.
 
-Resumable: every stage skips itself when its output already exists, and
-training resumes from a rolling epoch checkpoint after a crash. Pass --force
-to redo everything (e.g. after Optuna wrote tuned hyper-parameters).
-results/ is created automatically and is git-ignored.
+Deterministic by design, no flags:
+* The combination's Runtime-Data folder and its Step-2/3/4 results from any
+  previous run are WIPED first - runs never mix leftovers.
+* The original datasets and the paraphrase banks in Datasets/ are never touched.
+* Training fine-tunes FRESH from the pretrained backbone on every
+  run, with that run's random seed (injected by run_pipeline via
+  NLI_SEED), using the Optuna-tuned hyper-parameters when
+  configs/tuned/ has them. A job requeued mid-training with the SAME
+  pinned seed resumes its rolling checkpoint; any other seed starts
+  clean, so runs can never contaminate each other.
 """
-import argparse
 import subprocess
 import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+sys.path[:0] = [str(REPO_ROOT), str(REPO_ROOT / "Research-Pipeline")]
+
+from common.config_loader import load_config
+from common.logging_utils import banner
+from common.workspace import clean_combo_workspace
 
 HERE = Path(__file__).resolve().parent
 ORDER = ["train.py", "build_filtered_dataset.py", "encode_hypotheses.py", "evaluate.py"]
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true")
-    args = parser.parse_args()
-    extra = ["--force"] if args.force else []
+    clean_combo_workspace(load_config("BERT-base", "MNLI"))
     for script in ORDER:
-        print(f"\n===== BERT-base x MNLI | {script} =====")
-        if subprocess.run([sys.executable, str(HERE / script)] + extra).returncode != 0:
+        banner("STEP-1", f"running {script}", "BERT-base", "MNLI")
+        if subprocess.run([sys.executable, str(HERE / script)]).returncode != 0:
             sys.exit(f"FAILED: {script}")
-    print("\nStep-1 finished for BERT-base x MNLI.")
+    banner("STEP-1", "finished", "BERT-base", "MNLI")

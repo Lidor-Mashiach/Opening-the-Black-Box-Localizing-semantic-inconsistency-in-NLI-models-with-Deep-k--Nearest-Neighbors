@@ -1,47 +1,36 @@
-# 📊 Datasets
+# Datasets - READ-ONLY Sources
 
-All data used by the research: the three NLI corpora, the per-model
-"correct only" filtered subsets, the hypothesis paraphrases, and the
-layer-wise encoded representation banks.
+The three NLI corpora **plus the static paraphrase banks** - and nothing
+else. **No run of any model ever writes here.** The only writers are the
+one-time downloader (`setup-files/download_datasets.py` -> `raw/`) and the standalone
+[`setup-files/Paraphrase-Generator/`](../setup-files/Paraphrase-Generator/README.md)
+(-> `paraphrases/paraphrase_bank.csv`, also one-time).
 
-The three corpora are kept **strictly separate** - each represents a
-different sentence population, and merging them would blur where any
-improvement came from (see the methodology document).
+## Structure
 
-## 📁 Structure
+| Folder | Difficulty | Source | README |
+|--------|-----------|--------|--------|
+| [`SNLI-Stanford_NLI/`](SNLI-Stanford_NLI/README.md) | easiest | image-caption pairs (Bowman et al., 2015) | [-> README](SNLI-Stanford_NLI/README.md) |
+| [`MNLI-MultiGenre_NLI/`](MNLI-MultiGenre_NLI/README.md) | medium | ten written & spoken genres (Williams et al., 2018) | [-> README](MNLI-MultiGenre_NLI/README.md) |
+| [`ANLI-Adversarial_NLI/`](ANLI-Adversarial_NLI/README.md) | hardest | adversarially built, rounds r1-r3 (Nie et al., 2020) | [-> README](ANLI-Adversarial_NLI/README.md) |
 
-| Directory | Difficulty | Contents | README |
-|-----------|-----------|----------|--------|
-| [`SNLI-Stanford_NLI/`](SNLI-Stanford_NLI/README.md) | Easiest | Image-caption premises (Bowman et al., 2015) | [→ README](SNLI-Stanford_NLI/README.md) |
-| [`MNLI-MultiGenre_NLI/`](MNLI-MultiGenre_NLI/README.md) | Medium | Ten genres (Williams et al., 2018) | [→ README](MNLI-MultiGenre_NLI/README.md) |
-| [`ANLI-Adversarial_NLI/`](ANLI-Adversarial_NLI/README.md) | Hardest | Built adversarially (Nie et al., 2020) | [→ README](ANLI-Adversarial_NLI/README.md) |
-| [`Encoded_Datasets/`](Encoded_Datasets/README.md) | - | Layer-wise representation banks per model x dataset | [→ README](Encoded_Datasets/README.md) |
+Each dataset folder holds exactly two subfolders: `raw/` (the original
+corpus, one parquet per split) and `paraphrases/` (the static bank + its
+audit stats). The datasets are kept strictly **separate** - never merged.
 
-Every dataset directory has the same three subfolders:
-
-| Subfolder | What lives there | Produced by |
-|-----------|------------------|------------|
-| `raw/` | Original splits as parquet (unified schema) | `download_datasets.py` |
-| `filtered/<MODEL>/` | Train rows that model classified **correctly** | Step-1 `build_filtered_dataset.py` |
-| `paraphrases/` | `<MODEL>__paraphrases.csv` - ~5 relation-preserving paraphrases per kept hypothesis | `generate_paraphrases.py` (or any LLM respecting the contract) |
-
-## 🚀 Meta-Runner
+## Meta-Runner
 
 ```bash
-python download_datasets.py                 # all three corpora -> raw/
-python download_datasets.py --datasets SNLI # subset
-
-# after Step-1 has produced the filtered subsets:
-python generate_paraphrases.py              # generate + verify paraphrases
-python generate_paraphrases.py --limit 50   # quick trial run
+python setup-files/download_datasets.py                 # all three corpora -> raw/
+python setup-files/download_datasets.py --datasets SNLI # subset
 ```
 
-Uses the exact same loader as the pipeline (`common/data_loading.py`):
-same schema everywhere (`premise`, `hypothesis`, `label`, `pair_id`,
-`round` for ANLI), rows with label `-1` dropped.
+The main pipeline runs this automatically when raw data is missing.
 
-## 📏 Label Convention
+## Where Everything Else Lives
 
-`0 = entailment · 1 = neutral · 2 = contradiction` (HuggingFace standard).
-Neutral is a genuine logical relation, **not** model uncertainty; it is kept
-in training and in consistency counting (Neutral -> Neutral is consistent).
+Run-derived data (the reduced per-model copies, all encodings, the per-model
+paraphrase copies) lives in [`Runtime-Data/`](../Runtime-Data/README.md) and
+is **wiped at every run's start**. The paraphrase-bank generator and its
+configuration live in
+[`setup-files/Paraphrase-Generator/`](../setup-files/Paraphrase-Generator/README.md).

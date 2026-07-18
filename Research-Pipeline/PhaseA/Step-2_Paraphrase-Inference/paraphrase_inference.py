@@ -19,6 +19,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--dataset", required=True)
-    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    run_paraphrase_inference(args.model, args.dataset, force=args.force)
+    run_paraphrase_inference(args.model, args.dataset)

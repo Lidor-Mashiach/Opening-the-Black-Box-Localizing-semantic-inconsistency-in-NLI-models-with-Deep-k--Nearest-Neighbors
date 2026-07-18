@@ -1,4 +1,4 @@
-# 📊 SNLI - Stanford Natural Language Inference
+# SNLI - Stanford Natural Language Inference
 
 570k human-written sentence pairs; premises are Flickr30k image captions, hypotheses were written by crowdworkers. The first large-scale NLI corpus.
 
@@ -9,12 +9,16 @@
 | **Difficulty in this study** | Easiest |
 | **Source paper** | Bowman, Angeli, Potts & Manning (2015), EMNLP |
 
-## 📁 Subfolders
+## Subfolders
 
 | Subfolder | Contents | Produced by |
 |-----------|----------|------------|
 | `raw/` | `train / validation / test .parquet` - unified schema (`premise`, `hypothesis`, `label`, `pair_id`) | `../download_datasets.py` |
-| `filtered/<MODEL>/` | `train_correct.csv` + `filter_stats.json` - only rows the model classified correctly. **Each model produces a different filtered set** | Step-1 `build_filtered_dataset.py` |
-| `paraphrases/` | `<MODEL>__paraphrases.csv` - see [paraphrases/README.md](paraphrases/README.md) for the acquisition protocol and file contract | External protocol |
+| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (exactly 5 verified paraphrases per pooled hypothesis) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
 
 Rows with label `-1` (no gold consensus) are dropped at load time.
+
+> **Read-only folder.** Run-derived artifacts for this dataset (the reduced
+> per-model copies and all encodings) live in
+> [`Runtime-Data/`](../../Runtime-Data/README.md) and are wiped at each run's
+> start - nothing here is ever modified by the pipeline.

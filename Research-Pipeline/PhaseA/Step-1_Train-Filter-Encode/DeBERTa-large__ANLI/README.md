@@ -2,24 +2,27 @@
 
 Thin, per-combination wrappers. All real logic lives in
 [`Research-Pipeline/common/`](../../../common/README.md); these scripts only pin
-`MODEL_KEY = "DeBERTa-large"`, `DATASET_KEY = "ANLI"` and call it. Configuration comes from
-[`configs/`](../../../../../configs) (base -> model -> dataset -> tuned merge).
+`MODEL_KEY = "DeBERTa-large"`, `DATASET_KEY = "ANLI"`. Configuration comes from
+[`configs/`](../../../../configs) (base -> model -> dataset -> tuned merge).
 
-## Run Order
+## Run Order (what `run.py` does, in order)
 
-| # | Script | What it does | Output |
-|---|--------|--------------|--------|
-| 1 | `train.py` | Fine-tune DeBERTa-large on the ANLI train split | `results/checkpoints/final/`, `results/train_metrics.json` |
-| 2 | `build_filtered_dataset.py` | Keep only train rows the model got right | `Datasets/.../filtered/DeBERTa-large/train_correct.csv` |
-| 3 | `encode_hypotheses.py` | Store every kept hypothesis at every layer | `Datasets/Encoded_Datasets/DeBERTa-large/ANLI/hypotheses.npz` |
+| # | Stage | What it does | Output (all under `Runtime-Data/DeBERTa-large/ANLI/` unless noted) |
+|---|-------|--------------|-----------------------------------------------------------|
+| 0 | workspace wipe | Deletes this combination's Runtime-Data + Step-2/3/4 results from previous runs | fresh empty folder |
+| 1 | `train.py` | Fine-tunes DeBERTa-large FRESH from the official pretrained backbone on the ORIGINAL ANLI train split (read-only), with this run's random seed and the tuned hyper-parameters when available | `results/checkpoints/final/` (rebuilt every run) |
+| 2 | `build_filtered_dataset.py` | A NEW reduced COPY: only rows the model got right | `train_correct.csv` + `filter_stats.json` |
+| 3 | `encode_hypotheses.py` | Every kept hypothesis at every layer (pool hypotheses always included) | `hypotheses.npz` + meta |
 | 4 | `evaluate.py` | Baseline accuracy on validation + test | `results/baseline_eval.json` |
 
-Run everything in order with one command:
-
 ```bash
-python run.py             # resumable - finished stages are skipped
-python run.py --force     # redo everything (e.g. after Optuna tuning)
+python run.py
 ```
 
-Crash-resilience: training keeps one rolling epoch checkpoint and resumes
-from it automatically; every stage skips itself once its output exists.
+No flags. The original ANLI dataset and the paraphrase bank are **never
+modified**.
+
+Every pipeline run is an independent research sample: this combination
+re-trains from the backbone with a fresh seed, so its results vary run to run
+and are averaged in `runs_summary.csv`. A job requeued mid-training with the
+same pinned `NLI_SEED` resumes instead of restarting.

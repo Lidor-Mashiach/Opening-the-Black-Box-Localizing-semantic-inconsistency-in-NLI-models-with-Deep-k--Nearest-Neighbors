@@ -1,4 +1,4 @@
-# 📏 eval_metrics - All Evaluation Metrics
+# eval_metrics - All Evaluation Metrics
 
 One file per metric, exactly as characterized in the methodology chapter.
 Both Phase A and Phase B import from here - the metric code exists **once**,
@@ -8,7 +8,7 @@ never copy-pasted into pipeline steps.
 > `eval-metrics` because Python packages cannot contain a hyphen. Same
 > folder, importable.
 
-## 📄 The Metrics
+## The Metrics
 
 | File | Metric | Source | One-liner |
 |------|--------|--------|-----------|
@@ -19,7 +19,7 @@ never copy-pasted into pipeline steps.
 | `layer_distance.py` | **Layer Distance** | This work | Per-layer cosine distance hypothesis vs paraphrase + data-derived threshold + crossing-layer region |
 | `dknn_credibility.py` | **Credibility** | Deep k-NN (Papernot & McDaniel, 2018) | Layer-wise k-NN voting: supporters of the final prediction / (K x layers) |
 
-## 🔑 Key Rules Baked In
+## Key Rules Baked In
 
 - **Neutral counts.** Neutral -> Neutral is consistent; any change (including
   to/from Neutral) is inconsistent for RFR/PC. SFR counts only full flips.
@@ -37,7 +37,7 @@ never copy-pasted into pipeline steps.
   (generalization signal), a *negative* drop means it went up for the wrong
   reason (representation signal).
 
-## 🚀 Meta-Runner
+## Meta-Runner
 
 ```bash
 python eval_metrics/sanity_check.py     # from the repository root

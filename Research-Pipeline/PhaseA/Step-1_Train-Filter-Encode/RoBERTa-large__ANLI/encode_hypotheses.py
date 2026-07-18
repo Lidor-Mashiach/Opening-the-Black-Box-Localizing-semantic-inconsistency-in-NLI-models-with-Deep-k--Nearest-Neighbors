@@ -1,9 +1,7 @@
 """Step-1c: layer-wise representation bank of RoBERTa-large's correct ANLI hypotheses.
 
-Thin wrapper around common.encoding - all logic is shared. Skips automatically when its
-output already exists; pass --force to redo (e.g. after Optuna tuning).
+Thin wrapper around common.encoding - all logic is shared, nothing is duplicated.
 """
-import argparse
 import sys
 from pathlib import Path
 
@@ -16,8 +14,4 @@ MODEL_KEY = "RoBERTa-large"
 DATASET_KEY = "ANLI"
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="redo even when the output already exists")
-    args = parser.parse_args()
-    encode_hypothesis_bank(MODEL_KEY, DATASET_KEY, force=args.force)
+    encode_hypothesis_bank(MODEL_KEY, DATASET_KEY)

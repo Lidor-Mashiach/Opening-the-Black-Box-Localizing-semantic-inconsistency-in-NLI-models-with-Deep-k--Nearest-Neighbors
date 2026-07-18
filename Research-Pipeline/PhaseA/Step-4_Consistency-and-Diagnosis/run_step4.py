@@ -40,13 +40,16 @@ def main(models, datasets):
     if subprocess.run(cmd).returncode != 0:
         sys.exit("[step-4] overview plots FAILED")
 
+    cmd = [sys.executable, str(HERE / "final_report.py"),
+           "--models", ",".join(models), "--datasets", ",".join(datasets)]
+    if subprocess.run(cmd).returncode != 0:
+        sys.exit("[step-4] final report FAILED")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", default=None)
     parser.add_argument("--datasets", default=None)
-    parser.add_argument("--force", action="store_true",
-                        help="accepted for uniform pass-through; analysis always recomputes")
     args = parser.parse_args()
     main(args.models.split(",") if args.models else list_model_keys(),
          args.datasets.split(",") if args.datasets else list_dataset_keys())
