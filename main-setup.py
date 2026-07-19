@@ -193,7 +193,7 @@ def check_layout():
         return False
     missing = [
         f for f in ("setup_env.py", "download_datasets.py", "requirements.txt",
-                    "setup-files/Paraphrase-Generator/generate_paraphrases.py")
+                    "Paraphrase-Generator/generate_paraphrases.py")
         if not (_SETUP_DIR / f).exists()
     ]
     if missing:

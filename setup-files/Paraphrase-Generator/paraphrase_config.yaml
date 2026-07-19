@@ -3,28 +3,52 @@
 # This is deliberately separate from configs/ - the bank is a one-time,
 # static asset; the pipeline only READS the finished banks and never
 # consults these knobs.
+#
+# Built ONLY from each dataset's TRAIN split (train.parquet). validation/test
+# are never paraphrased - the research signal (DkNN, distances, credibility)
+# is computed on train-derived hypotheses and their paraphrases; val/test are
+# used only for a separate baseline-accuracy number. See the README.
 # =====================================================================
 paraphrases:
   # NOTE: the per-hypothesis quota and the dataset registry are GLOBALS at
   # the top of generate_paraphrases.py (PARAPHRASES_PER_HYPOTHESIS, DATASETS)
   # - edit them THERE. This file keeps generation/verification knobs only.
-  pool_size: 4000             # hypotheses sampled per DATASET (model-independent pool);
-                              # each model later uses only the ones IT classified
-                              # correctly (~90% -> ~3600)
-  candidates_per_hypothesis: 10   # raw candidates generated per round BEFORE the gates
-  max_generation_rounds: 8    # round 1 = diverse beam; rounds 2..N = FRESH nucleus
-                              # sampling (new seed + mild temperature ramp) until
-                              # EVERY hypothesis reaches the quota. Dropping is a
-                              # last-resort safety valve only - raise this for zero
-                              # drops at extra GPU cost
+
+  pool_size: null             # null = NO sampling: paraphrase EVERY hypothesis
+                              # in the whole train split (per your requirement).
+                              # Set an integer only for a quick smoke test.
+
+  candidates_per_hypothesis: 12   # raw candidates generated per round BEFORE the gates.
+                              # One beam call yields all 12 at once; more candidates
+                              # per round => the quota is reached in FEWER rounds.
+
+  max_generation_rounds: 6    # round 1 = diverse beam; rounds 2..N = FRESH nucleus
+                              # sampling. With early-stop below, the loop usually
+                              # ends well before this cap.
+
+  early_stop_patience: 2      # PERFORMANCE GUARD: if this many CONSECUTIVE retry
+                              # rounds add zero new verified paraphrases (the
+                              # generator is stuck on the hard remainder), stop
+                              # early instead of grinding to max_generation_rounds.
+                              # Prevents "hours that end in failure".
+
   length_ratio:               # paraphrase word-count / hypothesis word-count must stay
     min: 0.6                  # inside these bounds - length & complexity remain at the
     max: 1.5                  # hypothesis's own level, per dataset
+
   # Generator: the leading open paraphraser on the HF Hub (T5-base fine-tuned
   # on 6.3M ChatGPT paraphrase pairs); prompt + decoding follow its model card.
   generator_model: humarin/chatgpt_paraphraser_on_T5_base
   generator_prompt_prefix: "paraphrase: "
-  generation_batch_size: 8        # hypotheses per generation batch
+  generation_batch_size: 64       # hypotheses per generation batch. Large batch =
+                                  # full GPU utilization (the previous 8 left the
+                                  # card mostly idle). Lower only on GPU-OOM.
+
+  verifier_batch_size: 256        # (premise/hypothesis, candidate) pairs the verifier
+                                  # scores per forward pass. The verifier is a
+                                  # classifier (one short forward), so it packs a
+                                  # much larger batch than generation.
+
   # Verifier: the strongest public NLI model on the Hub (DeBERTa-v3-large,
   # 885K NLI pairs: MNLI+FEVER+ANLI+LingNLI+WANLI; 91.2% MNLI-m, SOTA ANLI).
   # DOUBLE gate: (a) hypothesis <-> candidate entail each other;

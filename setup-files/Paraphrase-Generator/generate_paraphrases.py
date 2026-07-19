@@ -82,7 +82,7 @@ PARAPHRASE_CONFIG = Path(__file__).resolve().parent / "paraphrase_config.yaml"
 # GLOBAL KNOBS - the ONLY two things to touch when scaling the banks
 # =====================================================================
 # How many verified paraphrases EVERY hypothesis gets (uniform quota).
-PARAPHRASES_PER_HYPOTHESIS = 5
+PARAPHRASES_PER_HYPOTHESIS = 3
 
 # Dataset registry. KEY = dataset name; VALUE = where the dataset lives,
 # relative to the repo root. The bank is written to
@@ -213,7 +213,8 @@ class ParaphraseGenerator:
                 diversity_penalty=3.0,
                 repetition_penalty=10.0,
                 no_repeat_ngram_size=2,
-                max_length=128)
+                max_length=128,
+                trust_remote_code=True)
         decoded = self.tokenizer.batch_decode(out, skip_special_tokens=True)
         n = self.n_candidates
         return [decoded[i * n:(i + 1) * n] for i in range(len(hypotheses))]
@@ -227,7 +228,7 @@ class EntailmentVerifier:
         print(f"[verifier] loading {model_id}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_id).to(device).eval()
-        self.batch_size = cfg["encoding"]["batch_size"]
+        self.batch_size = cfg["paraphrases"]["verifier_batch_size"]
         self.device = device
         id2label = getattr(self.model.config, "id2label", None) or {}
         label_map = canonical_label_map(id2label)
@@ -253,8 +254,33 @@ class EntailmentVerifier:
             preds.append(self._lookup[batch])
         return np.concatenate(preds)
 
+    def verify_batch(self, premises, hypotheses, candidates, gold_labels):
+        """Both gates in ONE fused forward pass over 3x the pairs.
+
+        Instead of three separate verifier calls (forward equivalence,
+        backward equivalence, premise-relation), concatenate all three pair
+        sets and score them in a single batched sweep - the GPU sees 3x the
+        work per launch, which is far more efficient than three smaller
+        sweeps. Returns a boolean mask: candidate passes BOTH gates.
+        """
+        if not candidates:
+            return np.array([], dtype=bool)
+        n = len(candidates)
+        # one big list: [fwd pairs ... | bwd pairs ... | relation pairs ...]
+        first = list(hypotheses) + list(candidates) + list(premises)
+        second = list(candidates) + list(hypotheses) + list(candidates)
+        preds = self._predict_canonical(first, second)
+        forward = preds[:n] == CANONICAL_LABELS["entailment"]
+        backward = preds[n:2 * n] == CANONICAL_LABELS["entailment"]
+        relation = preds[2 * n:] == np.asarray(gold_labels)
+        equivalent = forward & backward
+        return equivalent, relation
+
     def both_entail(self, hypotheses, candidates):
-        """Gate (a): hypothesis <-> candidate entail EACH OTHER."""
+        """Gate (a): hypothesis <-> candidate entail EACH OTHER.
+
+        Kept for the sanity check / direct callers; the hot path uses
+        verify_batch, which fuses this with gate (b)."""
         if not candidates:
             return np.array([], dtype=bool)
         forward = self._predict_canonical(hypotheses, candidates) == CANONICAL_LABELS["entailment"]
@@ -305,8 +331,7 @@ def run_verification_round(records, generator, verifier, verified, tried,
         flat_p = [r["premise"] for r, cs in zip(batch, cleaned) for _ in cs]
         flat_g = [r["label"] for r, cs in zip(batch, cleaned) for _ in cs]
         flat_c = [c for cs in cleaned for c in cs]
-        equivalent = verifier.both_entail(flat_h, flat_c)
-        relation_ok = verifier.relation_matches(flat_p, flat_c, flat_g)
+        equivalent, relation_ok = verifier.verify_batch(flat_p, flat_h, flat_c, flat_g)
         counters["rejected_equivalence"] += int((~equivalent).sum())
         counters["rejected_relation"] += int((equivalent & ~relation_ok).sum())
         ok = equivalent & relation_ok
@@ -326,15 +351,22 @@ def run_verification_round(records, generator, verifier, verified, tried,
 
 def fill_quota_over_rounds(records, generator, verifier, verified, tried,
                            per_hyp, gen_bs, length_bounds, counters,
-                           max_rounds, seed, dataset_key):
-    """Keep generating until EVERY hypothesis reaches the quota.
+                           max_rounds, seed, dataset_key, patience=2):
+    """Fill each hypothesis toward the quota, then STOP intelligently.
 
     Round 1 uses diverse beam search (deterministic, highest quality); every
     following round draws FRESH candidates via nucleus sampling - a new seed
     and a mild temperature ramp per round, deduplicated against everything
     already tried for that hypothesis - and runs the exact same gates. A
     hypothesis leaves the loop the moment it holds per_hyp verified
-    paraphrases. Returns {pair_id: round at which the quota was reached}.
+    paraphrases.
+
+    PERFORMANCE GUARD (early stop): the hard remainder of a large split can
+    resist paraphrasing no matter how many rounds run. If `patience`
+    consecutive retry rounds add ZERO new verified paraphrases across all
+    still-short hypotheses, the generator is stuck and the loop stops instead
+    of grinding to max_rounds. Whatever was collected is kept (partial rows
+    are allowed by the caller). Returns {pair_id: round at which quota met}.
     """
     fill_round = {}
 
@@ -350,8 +382,10 @@ def fill_quota_over_rounds(records, generator, verifier, verified, tried,
     _mark(1)
     short = [r for r in records if len(verified[r["pair_id"]]) < per_hyp]
     round_idx = 1
+    stagnant = 0
     while short and round_idx < max_rounds:
         round_idx += 1
+        accepted_before = counters["accepted"]
         torch.manual_seed(seed + round_idx)      # fresh candidates every round
         temperature = min(1.2 + 0.05 * (round_idx - 2), 1.5)
         log("BANK", f"round {round_idx}/{max_rounds}: {len(short)} hypotheses "
@@ -362,6 +396,14 @@ def fill_quota_over_rounds(records, generator, verifier, verified, tried,
                                length_bounds=length_bounds, counters=counters,
                                temperature=temperature)
         _mark(round_idx)
+        gained = counters["accepted"] - accepted_before
+        stagnant = stagnant + 1 if gained == 0 else 0
+        if stagnant >= patience:
+            log("WARN", f"early stop: {patience} consecutive rounds added no "
+                f"new paraphrases - {len(short)} hypothesis(es) stay below "
+                f"quota (their partial paraphrases are kept)",
+                dataset=dataset_key)
+            break
         short = [r for r in records if len(verified[r["pair_id"]]) < per_hyp]
     return fill_round
 
@@ -384,8 +426,8 @@ def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
         pool = pool.head(limit)
     per_hyp = cfg["paraphrases"]["per_hypothesis"]
     gen_bs = cfg["paraphrases"]["generation_batch_size"]
-    log("BANK", f"pool: {len(pool)} hypotheses, quota: EXACTLY {per_hyp} each",
-        dataset=dataset_key)
+    log("BANK", f"pool: {len(pool)} hypotheses, target: up to {per_hyp} "
+        f"paraphrases each (partial kept)", dataset=dataset_key)
 
     length_bounds = (float(cfg["paraphrases"]["length_ratio"]["min"]),
                      float(cfg["paraphrases"]["length_ratio"]["max"]))
@@ -396,18 +438,24 @@ def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
     tried = {r["pair_id"]: {_normalize(r["hypothesis"])} for r in records}
 
     max_rounds = int(cfg["paraphrases"].get("max_generation_rounds", 8))
+    patience = int(cfg["paraphrases"].get("early_stop_patience", 2))
     fill_round = fill_quota_over_rounds(records, generator, verifier, verified,
                                         tried, per_hyp, gen_bs, length_bounds,
                                         counters, max_rounds, cfg["seed"],
-                                        dataset_key)
+                                        dataset_key, patience=patience)
 
-    rows, dropped = [], 0
+    rows, dropped, partial = [], 0, 0
+    count_hist = {}
     for record in records:
         pid = record["pair_id"]
         keep = verified[pid]
-        if len(keep) < per_hyp:          # uniform quota: all-or-nothing
+        n = len(keep)
+        count_hist[n] = count_hist.get(n, 0) + 1
+        if n == 0:                       # nothing verified at all -> cannot use
             dropped += 1
             continue
+        if n < per_hyp:                  # keep PARTIAL (1..per_hyp-1) rather than lose it
+            partial += 1
         for para_idx, paraphrase in enumerate(keep[:per_hyp]):
             rows.append({"pair_id": pid,
                          "premise": record["premise"],
@@ -437,16 +485,22 @@ def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
     kept = len(records) - dropped
     stats = {
         "dataset": dataset_key,
+        "split": "train",
         "generator_model": cfg["paraphrases"]["generator_model"],
         "verifier_model": cfg["paraphrases"]["verifier_model"],
-        "per_hypothesis": per_hyp,
+        "target_paraphrases_per_hypothesis": per_hyp,
+        "policy": "keep partial (>=1); only 0-verified hypotheses are dropped",
         "length_ratio_bounds": list(length_bounds),
         "pool_size": len(records),
         "max_generation_rounds": max_rounds,
-        "hypotheses_kept_exact_quota": kept,
+        "hypotheses_kept": kept,
+        "hypotheses_at_full_quota": count_hist.get(per_hyp, 0),
+        "hypotheses_partial": partial,
+        "paraphrase_count_histogram": {str(k): count_hist[k]
+                                       for k in sorted(count_hist)},
         "fill_rounds_histogram": {str(r): sum(1 for v in fill_round.values() if v == r)
                                   for r in sorted(set(fill_round.values()))},
-        "hypotheses_dropped_after_all_rounds": dropped,
+        "hypotheses_dropped_zero_verified": dropped,
         "paraphrase_rows": len(rows),
         "gate_rejections": {k: v for k, v in counters.items() if k != "accepted"},
         "length_stats": length_stats,
@@ -454,14 +508,14 @@ def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
     }
     with open(out_csv.parent / "paraphrase_bank_stats.json", "w") as f:
         json.dump(stats, f, indent=2)
-    if dropped:
-        log("BANK", f"LAST-RESORT: {dropped} hypothesis(es) could not reach "
-            f"{per_hyp} verified paraphrases even after {max_rounds} rounds "
-            f"and were left out (uniform quota). Raise "
-            f"paraphrases.max_generation_rounds for zero drops.",
+    if partial or dropped:
+        log("WARN", f"{count_hist.get(per_hyp, 0)} hypotheses reached the full "
+            f"{per_hyp}; {partial} kept with fewer (partial); {dropped} dropped "
+            f"(zero verified). Partial rows are intentionally KEPT.",
             dataset=dataset_key)
-    log("BANK", f"bank saved: {kept} hypotheses x {per_hyp} = {len(rows)} rows "
-        f"(left out after all rounds: {dropped}) -> {out_csv}",
+    log("BANK", f"bank saved: {kept} hypotheses, {len(rows)} paraphrase rows "
+        f"(full quota: {count_hist.get(per_hyp, 0)}, partial: {partial}, "
+        f"dropped: {dropped}) -> {out_csv}",
         dataset=dataset_key)
     return stats
 
@@ -479,23 +533,55 @@ DERIVED_LOCATIONS = [
 ]
 
 
-def reset_derived_data():
-    """Clear every stale derived artifact from earlier runs (colored line per
-    location) so building new banks starts from zero. Preserves each folder's
-    tracked README; never touches configs/tuned or Models."""
+def reset_derived_data(dataset_key=None):
+    """Clear stale derived artifacts so a fresh bank starts from zero.
+
+    dataset_key is None  -> full reset (the main-setup run builds ALL datasets
+        in sequence, so wiping everything derived is correct).
+    dataset_key is set   -> reset ONLY that dataset's derived data, by matching
+        the '<MODEL>__<DATASET>' / '<DATASET>' path segments. This is what makes
+        parallel per-dataset sbatch jobs safe: an SNLI job never deletes what a
+        concurrent MNLI/ANLI job is building.
+
+    Always preserves each folder's tracked README; never touches configs/tuned
+    or Models.
+    """
     import shutil
     found = False
+
+    def _dataset_match(path):
+        """True if a derived path belongs to dataset_key (or always, if None)."""
+        if dataset_key is None:
+            return True
+        # Runtime-Data/<MODEL>/<DATASET>/...  and  results/<MODEL>__<DATASET>/...
+        parts = path.name
+        return path.name == dataset_key or path.name.endswith(f"__{dataset_key}")
+
     for label, rel in DERIVED_LOCATIONS:
         target = REPO_ROOT / rel
-        leftovers = [x for x in target.iterdir()
-                     if x.name != "README.md"] if target.exists() else []
+        if not target.exists():
+            continue
+        if dataset_key is None:
+            leftovers = [x for x in target.iterdir() if x.name != "README.md"]
+        elif rel == "Runtime-Data":
+            # Runtime-Data/<MODEL>/<DATASET>/ - descend one level to the dataset dir
+            leftovers = [d for model_dir in target.iterdir()
+                         if model_dir.is_dir() and model_dir.name != "README.md"
+                         for d in model_dir.iterdir()
+                         if d.name == dataset_key]
+        else:
+            # Step-N results/<MODEL>__<DATASET>/
+            leftovers = [x for x in target.iterdir()
+                         if x.name != "README.md" and _dataset_match(x)]
         if leftovers:
             found = True
             for item in leftovers:
                 shutil.rmtree(item) if item.is_dir() else item.unlink()
-            log("CLEAN", f"reset {label}")
-    log("CLEAN", "system reset complete - all stale derived data cleared"
-        if found else "no stale derived data found - system already clean")
+            scope = dataset_key or "all"
+            log("CLEAN", f"reset {label} ({scope})")
+    scope = f"for {dataset_key}" if dataset_key else "(all datasets)"
+    log("CLEAN", f"system reset complete {scope}"
+        if found else f"no stale derived data found {scope}")
     return found
 
 
@@ -514,11 +600,15 @@ def main(datasets, limit, rebuild=False):
         log("BANK", "nothing to do - all requested banks exist")
         return
 
-    # New banks are about to be built -> reset the whole derived pipeline first.
-    banner("CLEAN", "new paraphrase banks needed - resetting the system "
-           "before generating")
-    reset_derived_data()
-    log("BANK", "system reset - now generating paraphrases")
+    # New banks are about to be built -> reset the derived pipeline first.
+    # Full run (main-setup, all datasets) wipes everything; a single-dataset
+    # run (parallel sbatch) wipes ONLY its own dataset, so concurrent jobs on
+    # other datasets are never disturbed.
+    single = todo[0][0] if len(todo) == 1 else None
+    banner("CLEAN", f"new paraphrase bank(s) needed - resetting "
+           f"{'dataset ' + single if single else 'the system'} before generating")
+    reset_derived_data(dataset_key=single)
+    log("BANK", "reset done - now generating paraphrases")
 
     device = resolve_device("paraphrase bank generation")
     generator = verifier = None

@@ -4,6 +4,10 @@ Pulls every dataset from the HuggingFace hub with the exact same loader the
 pipeline uses (identical schema, -1 labels dropped, ANLI rounds concatenated)
 and saves each logical split as parquet under Datasets/<dataset>/raw/.
 
+Per-dataset skip: if a dataset's raw/ already has all three splits, it is
+left untouched and NOT re-downloaded or re-processed - delete the folder (or
+the missing split) to force a redo of that one dataset.
+
 Run:  python download_datasets.py
       python download_datasets.py --datasets SNLI,ANLI
 """
@@ -16,14 +20,25 @@ sys.path[:0] = [str(REPO_ROOT), str(REPO_ROOT / "Research-Pipeline")]
 
 from common import data_loading
 from common.config_loader import dataset_dir, list_dataset_keys, load_config
+from common.logging_utils import log
 
 SPLITS = ("train", "validation", "test")
+
+
+def raw_complete(out_dir):
+    """True when every split's parquet is already present - nothing to do."""
+    return all((out_dir / f"{split}.parquet").exists() for split in SPLITS)
 
 
 def main(datasets):
     for dataset_key in datasets:
         cfg = load_config(dataset_key=dataset_key)
         out_dir = dataset_dir(cfg) / "raw"
+        if raw_complete(out_dir):
+            log("SKIP", f"raw data already present at {out_dir} - not "
+                f"re-downloaded (delete the folder to force a redo)",
+                dataset=dataset_key)
+            continue
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"\n===== {dataset_key} -> {out_dir} =====")
         for split in SPLITS:
