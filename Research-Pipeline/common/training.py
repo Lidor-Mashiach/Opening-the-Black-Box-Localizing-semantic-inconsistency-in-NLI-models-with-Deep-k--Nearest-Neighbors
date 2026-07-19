@@ -45,6 +45,7 @@ from transformers.trainer_utils import get_last_checkpoint
 
 from . import data_loading, model_utils
 from .config_loader import load_config, step1_results_dir
+from .logging_utils import log
 
 
 def prepare_checkpoint_dir(ckpt_dir, seed, find_last=None):

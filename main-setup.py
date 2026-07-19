@@ -100,11 +100,11 @@ STEPS = [
         "Download raw SNLI/MNLI/ANLI into Datasets/<ds>/raw/",
         [PY, str(_SETUP_DIR / "download_datasets.py")],
     ),
-    Step(
-        "paraphrases",
-        "Generate the static paraphrase banks (GPU, one time)",
-        [PY, str(_SETUP_DIR / "Paraphrase-Generator" / "generate_paraphrases.py")],
-    ),
+    # Step(
+    #     "paraphrases",
+    #     "Generate the static paraphrase banks (GPU, one time)",
+    #     [PY, str(_SETUP_DIR / "Paraphrase-Generator" / "generate_paraphrases.py")],
+    # ),
 
 ]
 

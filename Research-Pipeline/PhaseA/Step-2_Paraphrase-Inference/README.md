@@ -7,8 +7,8 @@ representations feed DkNN Credibility and Layer Distance (Step-3).
 ## Input
 
 The **dataset-level paraphrase bank**
-(`Datasets/<dataset>/paraphrases/paraphrase_bank.csv` - exactly 5 verified
-paraphrases per pooled hypothesis, model-independent), **intersected here
+(`Datasets/<dataset>/paraphrases/paraphrase_bank.csv` - up to 3 verified
+paraphrases per hypothesis, model-independent), **intersected here
 with this model's correct-only set**: only rows whose `pair_id` appears in
 `Runtime-Data/<MODEL>/<DATASET>/train_correct.csv` (the reduced copy built by
 Step-1) enter. So every model is tested on the

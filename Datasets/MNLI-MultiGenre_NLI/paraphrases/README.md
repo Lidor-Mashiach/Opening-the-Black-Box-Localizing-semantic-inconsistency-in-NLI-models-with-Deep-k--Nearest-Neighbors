@@ -1,9 +1,10 @@
 # Paraphrase Bank - A Static, Shareable Research Asset
 
 This folder holds **`paraphrase_bank.csv`** - the dataset-level paraphrase
-bank: one static file, model-independent, with **EXACTLY 5 verified
-paraphrases for every pooled hypothesis** (uniform for all - a hypothesis
-that cannot reach the quota is dropped entirely, never kept partially).
+bank: one static file, model-independent, with **up to 3 verified
+paraphrases per hypothesis** (target 3, kept partial - a hypothesis with
+1-2 verified paraphrases is kept as-is; only a hypothesis with zero verified
+paraphrases is dropped).
 
 **Base condition (non-negotiable):** every paraphrase holds the *exact same
 logical relation* to the premise as the original hypothesis - i.e. in the
@@ -15,12 +16,12 @@ unverified ever enters.
 
 | Stage | What happens |
 |-------|--------------|
-| 1. Pool | `paraphrases.pool_size` (4,000) hypotheses sampled from the **raw train split** - seeded, deterministic, same `pair_id`s the whole pipeline uses |
-| 2. Generate | 10 candidates per hypothesis - `humarin/chatgpt_paraphraser_on_T5_base` (the leading open paraphraser on the HF Hub), diverse beam search per its model card |
+| 1. Pool | `paraphrases.pool_size` (`null` = **no sampling**, every hypothesis in the raw train split) - seeded, deterministic, same `pair_id`s the whole pipeline uses |
+| 2. Generate | 12 candidates per hypothesis - `humarin/chatgpt_paraphraser_on_T5_base` (the leading open paraphraser on the HF Hub), diverse beam search per its model card |
 | 3. Length gate | Word-count ratio candidate/hypothesis must stay in `paraphrases.length_ratio` (0.6-1.5) - **length & complexity remain at the hypothesis's own level**, so each dataset's difficulty is preserved and measurable |
 | 4. Double verify | `MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli` (the strongest public NLI model) applies TWO gates: **(a) equivalence** - hypothesis <-> candidate entail *each other*; **(b) relation** - the (premise, candidate) label **equals the gold label**. Same meaning AND same logical relation to the premise |
-| 5. Retry rounds | Hypotheses short of 5 get MORE rounds - fresh nucleus sampling each time (new seed + mild temperature ramp, dedup vs everything tried) - until the quota fills, up to `max_generation_rounds` (default 8) |
-| 6. Quota | **Exactly 5 kept per hypothesis** - perfectly uniform. A drop is only a last-resort safety valve for degenerate stragglers that cannot yield 5 valid paraphrases even after all rounds (expected ~0, loudly reported) |
+| 5. Retry rounds | Hypotheses short of the target get MORE rounds - fresh nucleus sampling each time (new seed + mild temperature ramp, dedup vs everything tried) - up to `max_generation_rounds` (default 6), with an early stop after `early_stop_patience` (2) consecutive rounds that add nothing |
+| 6. Quota | **Up to 3 kept per hypothesis** (target 3), kept partial: a hypothesis that yields 1-2 verified paraphrases is kept as-is. Only a hypothesis with **zero** verified paraphrases is dropped (loudly reported in the stats) |
 
 `paraphrase_bank_stats.json` makes it all **measurable**: pool size, a
 fill-rounds histogram, last-resort drops (expected ~0), per-gate rejection
@@ -63,7 +64,7 @@ The encoded DkNN bank of every model **always includes the pool hypotheses**
 | `hypothesis` | str | The original hypothesis (for reference / reuse) |
 | `paraphrase` | str | Reworded hypothesis, same logical relation |
 | `label` | int | Gold label (0/1/2) |
-| `para_idx` | int | 0..4 - exactly five per hypothesis |
+| `para_idx` | int | 0-based index within the hypothesis (0..2; fewer when partial) |
 
 ## Why We Built It Ourselves (verified July 2026)
 

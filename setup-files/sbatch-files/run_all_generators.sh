@@ -12,15 +12,10 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 # Active jobs - comment out any job you do NOT want to submit
 # -----------------------------------------------------------------------
 JOBS=(
-    "$BASE/tune_BERT-base__SNLI.sbatch"
-    "$BASE/tune_BERT-base__MNLI.sbatch"
-    "$BASE/tune_BERT-base__ANLI.sbatch"
-    "$BASE/tune_RoBERTa-large__SNLI.sbatch"
-    "$BASE/tune_RoBERTa-large__ANLI.sbatch"
-    "$BASE/tune_DeBERTa-large__SNLI.sbatch"
-    "$BASE/tune_DeBERTa-large__ANLI.sbatch"
-    "$BASE/tune_BART-large__SNLI.sbatch"
-    "$BASE/tune_BART-large__ANLI.sbatch"
+    "$BASE/paraphrases_ANLI.sbatch"
+    "$BASE/paraphrases_MNLI.sbatch"
+    "$BASE/paraphrases_SNLI.sbatch"
+ 
 )
 
 echo "Submitting ${#JOBS[@]} job(s) from $BASE ..."

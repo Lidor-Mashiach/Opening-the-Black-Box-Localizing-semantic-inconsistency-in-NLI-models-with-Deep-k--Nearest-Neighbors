@@ -121,7 +121,7 @@ def ensure_raw_data(datasets):
             missing.append(key)
     if missing:
         log("DATA", f"raw data missing for: {', '.join(missing)} - downloading")
-        _run([str(REPO_ROOT / "Datasets" / "download_datasets.py"),
+        _run([str(REPO_ROOT / "setup-files" / "download_datasets.py"),
               "--datasets", ",".join(missing)], "dataset download FAILED")
     else:
         log("DATA", "raw data present for all selected datasets")

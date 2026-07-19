@@ -14,7 +14,7 @@
 | Subfolder | Contents | Produced by |
 |-----------|----------|------------|
 | `raw/` | `train / validation / test .parquet` - unified schema (`premise`, `hypothesis`, `label`, `pair_id`) | `../download_datasets.py` |
-| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (exactly 5 verified paraphrases per pooled hypothesis) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
+| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (up to 3 verified paraphrases per hypothesis; kept partial, only zero-verified dropped) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
 
 Rows with label `-1` (no gold consensus) are dropped at load time.
 

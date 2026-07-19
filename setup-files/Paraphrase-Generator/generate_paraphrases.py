@@ -8,7 +8,7 @@ split - exactly the design a research community can reuse:
             to the ones the whole pipeline uses).
 2. GENERATE the leading open paraphraser (humarin/chatgpt_paraphraser_on_T5_base)
             produces candidates_per_hypothesis rewordings per hypothesis
-            (diverse beam search, per its model card).
+            (nucleus / top-p sampling, run in bf16).
 3. LENGTH   a candidate must stay at the hypothesis's own level: its
             word-count ratio vs the hypothesis must be inside
             paraphrases.length_ratio (default 0.6-1.5). Each dataset's
@@ -22,16 +22,17 @@ split - exactly the design a research community can reuse:
                   (premise, candidate) must EQUAL the gold label.
             Together: same meaning as the hypothesis AND the same logical
             relation to the premise - Premise:Hypothesis == Premise:Paraphrase.
-5. RETRY    hypotheses still short of the quota get MORE generation rounds -
+5. RETRY    hypotheses still short of the target get MORE generation rounds -
             FRESH nucleus sampling every round (new seed + a mild temperature
-            ramp, deduplicated against everything already tried) - until
-            EVERY hypothesis reaches the quota, bounded by
-            max_generation_rounds (default 8 rounds ~= 80 candidates each).
-6. QUOTA    EXACTLY per_hypothesis (default 5) verified paraphrases per
-            hypothesis - uniform for all. Dropping a hypothesis is only a
-            LAST-RESORT safety valve for degenerate cases that cannot yield
-            the quota even after all rounds (expected ~0, loudly reported in
-            the stats); raise max_generation_rounds for zero drops.
+            ramp, deduplicated against everything already tried) - bounded by
+            max_generation_rounds (default 6), with an early stop after
+            early_stop_patience (2) consecutive rounds that add nothing.
+6. QUOTA    UP TO per_hypothesis (default 3) verified paraphrases per
+            hypothesis, kept partial: a hypothesis with 1..per_hypothesis-1
+            verified paraphrases is kept as-is. Only a hypothesis with ZERO
+            verified paraphrases is dropped (loudly reported in the stats);
+            raise max_generation_rounds / candidates_per_hypothesis to reduce
+            partials and zero-verified drops.
 
 PROTECTION - the bank is treated like the raw data: running this script (or
 the pipeline) NEVER overwrites an existing bank. Regeneration requires an
@@ -51,6 +52,15 @@ Run:  python generate_paraphrases.py                     (banks that are missing
       python generate_paraphrases.py --datasets SNLI
       python generate_paraphrases.py --rebuild            (explicit regeneration)
       python generate_paraphrases.py --limit 50           (quick trial run)
+
+Parallel (SLURM array) - split one dataset across N shards, then assemble:
+      python generate_paraphrases.py --datasets SNLI --num-shards 3 --shard-index 0
+      python generate_paraphrases.py --datasets SNLI --num-shards 3 --shard-index 1
+      python generate_paraphrases.py --datasets SNLI --num-shards 3 --shard-index 2
+      python merge_shards.py --datasets SNLI              (after all shards finish)
+Each shard writes paraphrase_bank.partIIIofNNN.csv (disjoint, never colliding);
+merge_shards.py concatenates + sorts them into the final bank and resets the
+derived pipeline once. Shard runs do NOT reset derived data themselves.
 
 GPU strongly recommended. The bank depends only on the raw data + the two
 public models above - retraining YOUR models never invalidates it.
@@ -81,8 +91,10 @@ PARAPHRASE_CONFIG = Path(__file__).resolve().parent / "paraphrase_config.yaml"
 # =====================================================================
 # GLOBAL KNOBS - the ONLY two things to touch when scaling the banks
 # =====================================================================
-# How many verified paraphrases EVERY hypothesis gets (uniform quota).
-PARAPHRASES_PER_HYPOTHESIS = 3
+# Target verified paraphrases per hypothesis (ASPIRE to this). Partial is kept:
+# a hypothesis with 1..N-1 verified paraphrases stays as-is; only a hypothesis
+# with ZERO verified paraphrases is dropped from the bank.
+PARAPHRASES_PER_HYPOTHESIS = 5
 
 # Dataset registry. KEY = dataset name; VALUE = where the dataset lives,
 # relative to the repo root. The bank is written to
@@ -182,39 +194,42 @@ class ParaphraseGenerator:
         model_id = cfg["paraphrases"]["generator_model"]
         print(f"[generator] loading {model_id}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(model_id).to(device).eval()
+        gen_dtype = (torch.bfloat16 if device.type == "cuda"
+                     and torch.cuda.is_bf16_supported() else torch.float32)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(
+            model_id, torch_dtype=gen_dtype).to(device).eval()
         self.prefix = cfg["paraphrases"]["generator_prompt_prefix"]
         self.n_candidates = cfg["paraphrases"]["candidates_per_hypothesis"]
+        self.max_len_ratio = float(cfg["paraphrases"]["length_ratio"]["max"])
         self.device = device
 
     @torch.no_grad()
-    def generate(self, hypotheses, use_sampling=False, temperature=1.2):
+    def generate(self, hypotheses, temperature=1.0):
         """list[str] -> list[list[str]] of n_candidates rewordings each.
 
-        Round 1 (use_sampling=False): diverse beam search per the generator's
-        model card - deterministic, high quality.
-        Retry round (use_sampling=True): nucleus sampling - produces FRESH
-        candidates for hypotheses the first round could not fill.
+        Nucleus sampling (top-p) for EVERY round. Diverse beam search with
+        num_beams=n_candidates was the source of the CUDA-OOM thrash and most
+        of the runtime (it expands the batch by n_candidates AND decodes each
+        beam group sequentially). Sampling gives all n_candidates in one packed
+        forward, uses a fraction of the memory, and gets its diversity from
+        top-p + the per-round temperature ramp - and since the double verifier
+        gates every kept paraphrase, quality is unchanged; only wasted compute
+        is removed.
         """
         inputs = [self.prefix + h for h in hypotheses]
         enc = self.tokenizer(inputs, padding=True, truncation=True,
                              max_length=128, return_tensors="pt").to(self.device)
-        if use_sampling:
-            out = self.model.generate(
-                **enc, do_sample=True, top_p=0.95, temperature=temperature,
-                num_return_sequences=self.n_candidates,
-                no_repeat_ngram_size=2, max_length=128)
-        else:
-            out = self.model.generate(
-                **enc,
-                num_beams=self.n_candidates,
-                num_beam_groups=self.n_candidates,
-                num_return_sequences=self.n_candidates,
-                diversity_penalty=3.0,
-                repetition_penalty=10.0,
-                no_repeat_ngram_size=2,
-                max_length=128,
-                trust_remote_code=True)
+        # A paraphrase stays at the hypothesis's own length: the length gate
+        # rejects anything above length_ratio.max WORDS, so bound NEW tokens to
+        # that same ratio over the input (max input in the batch, so the longest
+        # hypothesis is never truncated) + a small margin. Tokens >= words, so
+        # this can never cut a gate-passing paraphrase; it just avoids the wasted
+        # decode steps of a fixed 128. Tie to the config so the two stay in sync.
+        max_new = int(enc["input_ids"].shape[1] * self.max_len_ratio) + 8
+        out = self.model.generate(
+            **enc, do_sample=True, top_p=0.95, temperature=temperature,
+            num_return_sequences=self.n_candidates,
+            no_repeat_ngram_size=2, max_new_tokens=max_new)
         decoded = self.tokenizer.batch_decode(out, skip_special_tokens=True)
         n = self.n_candidates
         return [decoded[i * n:(i + 1) * n] for i in range(len(hypotheses))]
@@ -227,7 +242,10 @@ class EntailmentVerifier:
         model_id = cfg["paraphrases"]["verifier_model"]
         print(f"[verifier] loading {model_id}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_id).to(device).eval()
+        ver_dtype = (torch.bfloat16 if device.type == "cuda"
+                     and torch.cuda.is_bf16_supported() else torch.float32)
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            model_id, torch_dtype=ver_dtype).to(device).eval()
         self.batch_size = cfg["paraphrases"]["verifier_batch_size"]
         self.device = device
         id2label = getattr(self.model.config, "id2label", None) or {}
@@ -309,7 +327,6 @@ def run_verification_round(records, generator, verifier, verified, tried,
     for start in range(0, len(records), gen_bs):
         batch = records[start:start + gen_bs]
         all_candidates = generator.generate([r["hypothesis"] for r in batch],
-                                            use_sampling=use_sampling,
                                             temperature=temperature)
         cleaned = []
         for record, cands in zip(batch, all_candidates):
@@ -345,7 +362,7 @@ def run_verification_round(records, generator, verifier, verified, tried,
                     counters["accepted"] += 1
             pos += len(cands)
         done = min(start + gen_bs, len(records))
-        mode = "retry/sampling" if use_sampling else "round-1/beam"
+        mode = "retry" if use_sampling else "round-1"
         print(f"  [{mode}] {done}/{len(records)} hypotheses", flush=True)
 
 
@@ -378,7 +395,8 @@ def fill_quota_over_rounds(records, generator, verifier, verified, tried,
 
     run_verification_round(records, generator, verifier, verified, tried,
                            per_hyp, gen_bs, use_sampling=False,
-                           length_bounds=length_bounds, counters=counters)
+                           length_bounds=length_bounds, counters=counters,
+                           temperature=1.0)
     _mark(1)
     short = [r for r in records if len(verified[r["pair_id"]]) < per_hyp]
     round_idx = 1
@@ -408,22 +426,45 @@ def fill_quota_over_rounds(records, generator, verifier, verified, tried,
     return fill_round
 
 
+def _shard_paths(dataset_key, shard_index, num_shards):
+    """Output CSV + stats path for a shard (or the final bank when not sharded)."""
+    final = registry_bank_csv(dataset_key)
+    if num_shards and num_shards > 1:
+        csv = final.with_name(
+            f"paraphrase_bank.part{shard_index:03d}of{num_shards:03d}.csv")
+        stats = csv.with_name(csv.name[:-4] + "_stats.json")
+    else:
+        csv = final
+        stats = csv.parent / "paraphrase_bank_stats.json"
+    return csv, stats
+
+
 def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
-                         rebuild=False):
-    out_csv = registry_bank_csv(dataset_key)
+                         rebuild=False, shard_index=None, num_shards=None):
+    sharded = bool(num_shards and num_shards > 1)
+    out_csv, stats_path = _shard_paths(dataset_key, shard_index, num_shards)
     if out_csv.exists() and not rebuild:
-        log("SKIP", f"bank already exists at {out_csv} - protected like the "
-            f"raw data; regenerate only with --rebuild (previous bank is kept "
-            f"as paraphrase_bank.backup.csv)", dataset=dataset_key)
+        what = f"shard {shard_index + 1}/{num_shards}" if sharded else "bank"
+        log("SKIP", f"{what} already exists at {out_csv} - protected like the "
+            f"raw data; regenerate only with --rebuild", dataset=dataset_key)
         return None
 
-    banner("BANK", "building the static paraphrase bank", dataset=dataset_key)
+    banner("BANK", "building the static paraphrase bank"
+           + (f" (shard {shard_index + 1}/{num_shards})" if sharded else ""),
+           dataset=dataset_key)
     train = data_loading.load_nli(cfg, "train")
     train = data_loading.add_pair_ids(train, cfg, "train")
     df = train.to_pandas()[["pair_id", "premise", "hypothesis", "label"]]
     pool = deterministic_pool_sample(df, cfg)
     if limit is not None:
         pool = pool.head(limit)
+    if sharded:                     # disjoint contiguous slice of the pool for THIS shard
+        n_pool = len(pool)
+        start = shard_index * n_pool // num_shards
+        end = (shard_index + 1) * n_pool // num_shards
+        pool = pool.iloc[start:end]
+        log("BANK", f"shard {shard_index + 1}/{num_shards}: hypotheses "
+            f"[{start}:{end}) of {n_pool}", dataset=dataset_key)
     per_hyp = cfg["paraphrases"]["per_hypothesis"]
     gen_bs = cfg["paraphrases"]["generation_batch_size"]
     log("BANK", f"pool: {len(pool)} hypotheses, target: up to {per_hyp} "
@@ -466,7 +507,10 @@ def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     bank_df = pd.DataFrame(rows)
-    _safe_write_bank(bank_df, out_csv)
+    if sharded:
+        bank_df.to_csv(out_csv, index=False)   # part file; merge_shards.py assembles the bank safely
+    else:
+        _safe_write_bank(bank_df, out_csv)
 
     # difficulty stays measurable: paraphrase length must track the hypothesis
     if len(bank_df):
@@ -505,8 +549,10 @@ def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
         "gate_rejections": {k: v for k, v in counters.items() if k != "accepted"},
         "length_stats": length_stats,
         "output_csv": str(out_csv),
+        "shard": ({"index": shard_index, "num_shards": num_shards}
+                  if sharded else None),
     }
-    with open(out_csv.parent / "paraphrase_bank_stats.json", "w") as f:
+    with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
     if partial or dropped:
         log("WARN", f"{count_hist.get(per_hyp, 0)} hypotheses reached the full "
@@ -585,30 +631,40 @@ def reset_derived_data(dataset_key=None):
     return found
 
 
-def main(datasets, limit, rebuild=False):
+def main(datasets, limit, rebuild=False, shard_index=None, num_shards=None):
+    sharded = bool(num_shards and num_shards > 1)
     # decide what actually needs work BEFORE loading any model
     todo = []
     for dataset_key in datasets:
         cfg = load_generator_config(dataset_key)
-        if registry_bank_csv(dataset_key).exists() and not rebuild:
-            log("SKIP", "bank exists (protected - use --rebuild to regenerate; "
-                "the previous bank would be kept as paraphrase_bank.backup.csv)",
+        out_csv, _ = _shard_paths(dataset_key, shard_index, num_shards)
+        if out_csv.exists() and not rebuild:
+            what = f"shard {shard_index + 1}/{num_shards}" if sharded else "bank"
+            log("SKIP", f"{what} exists (protected - use --rebuild to regenerate)",
                 dataset=dataset_key)
         else:
             todo.append((dataset_key, cfg))
     if not todo:
-        log("BANK", "nothing to do - all requested banks exist")
+        log("BANK", "nothing to do - all requested outputs exist")
         return
 
-    # New banks are about to be built -> reset the derived pipeline first.
-    # Full run (main-setup, all datasets) wipes everything; a single-dataset
-    # run (parallel sbatch) wipes ONLY its own dataset, so concurrent jobs on
-    # other datasets are never disturbed.
-    single = todo[0][0] if len(todo) == 1 else None
-    banner("CLEAN", f"new paraphrase bank(s) needed - resetting "
-           f"{'dataset ' + single if single else 'the system'} before generating")
-    reset_derived_data(dataset_key=single)
-    log("BANK", "reset done - now generating paraphrases")
+    if sharded:
+        # Sharded runs NEVER reset derived data: many array tasks build the same
+        # dataset at once and the reset is a single global operation. Each shard
+        # writes its own paraphrase_bank.partIIIofNNN.csv (they never collide);
+        # merge_shards.py assembles the complete bank and resets ONCE afterwards.
+        log("BANK", f"shard mode (index {shard_index}, {num_shards} shards) - "
+            f"generating parts only; run merge_shards.py when all shards finish")
+    else:
+        # New banks are about to be built -> reset the derived pipeline first.
+        # Full run (main-setup, all datasets) wipes everything; a single-dataset
+        # run (parallel sbatch) wipes ONLY its own dataset, so concurrent jobs on
+        # other datasets are never disturbed.
+        single = todo[0][0] if len(todo) == 1 else None
+        banner("CLEAN", f"new paraphrase bank(s) needed - resetting "
+               f"{'dataset ' + single if single else 'the system'} before generating")
+        reset_derived_data(dataset_key=single)
+        log("BANK", "reset done - now generating paraphrases")
 
     device = resolve_device("paraphrase bank generation")
     generator = verifier = None
@@ -619,7 +675,8 @@ def main(datasets, limit, rebuild=False):
             generator = ParaphraseGenerator(cfg, device)
             verifier = EntailmentVerifier(cfg, device)
         generate_for_dataset(dataset_key, generator, verifier, cfg, limit,
-                             rebuild=rebuild)
+                             rebuild=rebuild, shard_index=shard_index,
+                             num_shards=num_shards)
 
 
 if __name__ == "__main__":
@@ -632,6 +689,21 @@ if __name__ == "__main__":
                              "preserved as paraphrase_bank.backup.csv)")
     parser.add_argument("--limit", type=int, default=None,
                         help="pool hypotheses per dataset (quick trial run)")
+    parser.add_argument("--num-shards", type=int, default=None,
+                        help="split each dataset's pool into this many disjoint "
+                             "shards for parallel SLURM array tasks. Each shard "
+                             "writes paraphrase_bank.partIIIofNNN.csv; run "
+                             "merge_shards.py afterwards to assemble the bank.")
+    parser.add_argument("--shard-index", type=int, default=None,
+                        help="0-based index of THIS shard (requires --num-shards)")
     args = parser.parse_args()
+    if (args.num_shards is None) != (args.shard_index is None):
+        parser.error("--num-shards and --shard-index must be given together")
+    if args.num_shards is not None:
+        if args.num_shards < 1:
+            parser.error("--num-shards must be >= 1")
+        if not (0 <= args.shard_index < args.num_shards):
+            parser.error("--shard-index must be in [0, --num-shards)")
     main(args.datasets.split(",") if args.datasets else list(DATASETS),
-         args.limit, rebuild=args.rebuild)
+         args.limit, rebuild=args.rebuild,
+         shard_index=args.shard_index, num_shards=args.num_shards)

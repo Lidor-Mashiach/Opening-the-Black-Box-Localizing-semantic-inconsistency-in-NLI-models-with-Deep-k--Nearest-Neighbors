@@ -4,8 +4,8 @@ the per-model banks and the analysis aligned.
 Chain:
 
     raw train split (per DATASET, model-independent)
-        -> deterministic_pool_sample()      paraphrases.pool_size hypotheses
-            -> generate + verify            EXACTLY per_hypothesis paraphrases each
+        -> deterministic_pool_sample()      paraphrases.pool_size hypotheses (null = all)
+            -> generate + verify            up to per_hypothesis each (partial kept)
             -> paraphrase_bank.csv          the static, shareable asset
 
     filtered train_correct.csv (per MODEL)

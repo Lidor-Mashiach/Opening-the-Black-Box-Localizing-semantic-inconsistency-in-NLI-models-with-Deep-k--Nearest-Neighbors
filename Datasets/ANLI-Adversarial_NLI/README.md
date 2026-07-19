@@ -14,7 +14,7 @@ Built adversarially with a human-and-model-in-the-loop procedure over three roun
 | Subfolder | Contents | Produced by |
 |-----------|----------|------------|
 | `raw/` | `train / validation / test .parquet` - unified schema (`premise`, `hypothesis`, `label`, `pair_id`, `round`) | `../download_datasets.py` |
-| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (exactly 5 verified paraphrases per pooled hypothesis) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
+| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (up to 3 verified paraphrases per hypothesis; kept partial, only zero-verified dropped) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
 
 ANLI is the smallest of the three - the sampling caps in `configs/base.yaml` will usually not trigger here.
 

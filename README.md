@@ -229,17 +229,18 @@ relation-preserving paraphrases per hypothesis for SNLI / MNLI / ANLI.**
 **Adopted protocol** (mirrors the anchor paper), implemented in
 [`setup-files/Paraphrase-Generator/generate_paraphrases.py`](setup-files/Paraphrase-Generator/generate_paraphrases.py) as a
 **static, dataset-level paraphrase bank** - itself a shareable contribution:
-sample a `pool_size` (4,000) of hypotheses per dataset from the raw train
-split -> 10 candidates each from the leading open paraphraser
+take every hypothesis in each dataset's raw train split (`pool_size: null`,
+no sampling) -> 12 candidates each from the leading open paraphraser
 (`humarin/chatgpt_paraphraser_on_T5_base`) -> a length gate keeping
 complexity at the hypothesis's own level (word-ratio 0.6-1.5) -> a **double
 verification** with the strongest public NLI verifier
 (`MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli`): bidirectional
 entailment (same meaning) **and** (premise, candidate) label == gold (same
 logical relation) -> as many FRESH-candidate rounds as needed (new seed +
-temperature ramp per round, bounded by `max_generation_rounds`) -> **EXACTLY 5
-verified paraphrases per hypothesis** (uniform; dropping is only a last-resort
-safety valve for degenerate stragglers, expected ~0).
+temperature ramp per round, bounded by `max_generation_rounds`) -> **up to 3
+verified paraphrases per hypothesis** (target 3, kept partial: a hypothesis
+with 1-2 verified paraphrases is kept as-is; only a hypothesis with zero
+verified paraphrases is dropped).
 The bank is protected like the raw data: never overwritten (explicit
 `--rebuild` only, with an automatic `.backup`). Each model then consumes only the rows
 it classified correctly - so all models share the exact same paraphrases for
@@ -297,7 +298,7 @@ when raw data is missing.
 python setup-files/Paraphrase-Generator/generate_paraphrases.py     # once, on a GPU machine
 ```
 
-EXACTLY 5 verified paraphrases per pooled hypothesis, triple-gated. **Commit
+Up to 3 verified paraphrases per hypothesis (kept partial, only zero-verified dropped), triple-gated. **Commit
 the banks afterwards** - they are the static input of every run, never
 regenerated. The pipeline verifies they exist and EXITS with this exact
 command otherwise.

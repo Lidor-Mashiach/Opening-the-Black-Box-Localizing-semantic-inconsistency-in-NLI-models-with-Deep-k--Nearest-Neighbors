@@ -102,8 +102,9 @@ def paraphrase_bank_csv(cfg):
     """The DATASET-level, model-independent paraphrase bank.
 
     One static file per dataset (Datasets/<dataset>/paraphrases/
-    paraphrase_bank.csv) with EXACTLY paraphrases.per_hypothesis verified
-    paraphrases for every pooled hypothesis - a shareable research asset.
+    paraphrase_bank.csv) with UP TO paraphrases.per_hypothesis verified
+    paraphrases per hypothesis (kept partial; only zero-verified dropped) -
+    a shareable research asset.
     Each model consumes only the rows whose hypothesis it classified
     correctly (the intersection happens in Step-2).
     """
