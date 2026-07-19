@@ -43,7 +43,8 @@ import optuna
 import torch
 import yaml
 from transformers import (AutoModelForSequenceClassification, AutoTokenizer,
-                          DataCollatorWithPadding, Trainer, TrainingArguments)
+                          DataCollatorWithPadding, Trainer, TrainerCallback,
+                          TrainingArguments)
 
 from common import data_loading, model_utils
 from common.gpu import resolve_device
@@ -51,6 +52,54 @@ from common.logging_utils import log
 from common.config_loader import CONFIGS_DIR, combo_name, load_config
 
 RESULTS_ROOT = REPO_ROOT / "tuning" / "results"
+
+# Ampere+ free speedup for the fp32 matmuls that remain under mixed precision.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+
+def _precision_flags():
+    """Prefer bf16 (stable, no loss scaling) on capable GPUs, else fp16, else
+    fp32. bf16 avoids the fp16 gradient over/underflow that can stall or NaN
+    large-model fine-tuning - same speed on Ampere, more robust."""
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return {"bf16": True}
+    if torch.cuda.is_available():
+        return {"fp16": True}
+    return {}
+
+
+def _accuracy_metrics(eval_pred):
+    """compute_metrics for the Trainer: plain classification accuracy."""
+    logits, labels = eval_pred
+    preds = np.asarray(logits).argmax(axis=-1)
+    return {"accuracy": float((preds == np.asarray(labels)).mean())}
+
+
+class _OptunaPruneCallback(TrainerCallback):
+    """Report validation accuracy to Optuna each epoch and prune weak trials.
+
+    Optuna's principle is untouched - the search still MAXIMISES validation
+    accuracy and still writes any new best to the overlay - it just abandons a
+    trial once its per-epoch accuracy is clearly below the running median,
+    saving the rest of that trial's epochs. Also exposes the latest accuracy so
+    the objective can return the final-epoch value without a second eval pass.
+    """
+
+    def __init__(self, trial):
+        self.trial = trial
+        self.last_accuracy = None
+        self._step = 0
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        acc = (metrics or {}).get("eval_accuracy")
+        if acc is None:
+            return
+        self.last_accuracy = float(acc)
+        self._step += 1
+        self.trial.report(self.last_accuracy, step=self._step)
+        if self.trial.should_prune():
+            raise optuna.TrialPruned()
 
 
 def _subsample(ds, n, seed):
@@ -103,11 +152,14 @@ def run_study(model_key, dataset_key, n_trials=None):
         return tokenizer(batch["premise"], batch["hypothesis"], truncation=True,
                          max_length=cfg["training"]["max_seq_len"])
 
-    tokenized_train = train.map(
-        tokenize, batched=True,
-        remove_columns=[c for c in train.column_names if c != "label"])
+    def _keep_label(ds):
+        return [c for c in ds.column_names if c != "label"]
+
+    tokenized_train = train.map(tokenize, batched=True,
+                                remove_columns=_keep_label(train))
+    tokenized_val = val.map(tokenize, batched=True,
+                            remove_columns=_keep_label(val))
     collator = DataCollatorWithPadding(tokenizer)
-    val_labels = np.asarray(val["label"])
 
     tuned_dir = CONFIGS_DIR / "tuned"
     tuned_path = tuned_dir / f"{combo}.yaml"
@@ -143,6 +195,8 @@ def run_study(model_key, dataset_key, n_trials=None):
                 f"-> saved to {tuned_path.relative_to(REPO_ROOT)}",
                 model_key, dataset_key)
 
+    eval_batch = 4 * max(int(cfg["training"]["batch_size"]), 8)  # eval has no grads -> bigger batch
+
     def objective(trial):
         params = _suggest_params(trial, cfg)
         print(f"[tuning] trial {trial.number}: {params}")
@@ -154,33 +208,40 @@ def run_study(model_key, dataset_key, n_trials=None):
             output_dir=str(results_dir / "trial_tmp"),
             num_train_epochs=params["epochs"],
             per_device_train_batch_size=params["batch_size"],
+            per_device_eval_batch_size=eval_batch,
             learning_rate=params["learning_rate"],
             weight_decay=params["weight_decay"],
             warmup_ratio=params["warmup_ratio"],
             seed=cfg["seed"],
             save_strategy="no",
+            eval_strategy="epoch",              # per-epoch accuracy -> enables pruning
             logging_steps=200,
-            fp16=torch.cuda.is_available(),
+            dataloader_num_workers=4,           # feed the GPU without input-pipeline stalls
+            dataloader_pin_memory=True,
             report_to=[],
+            **_precision_flags(),               # bf16 (preferred) / fp16 / fp32
         )
-        Trainer(model=model, args=args, train_dataset=tokenized_train,
-                data_collator=collator).train()
-        model.eval()
-        preds = model_utils.predict(model, tokenizer, device,
-                                    val["premise"], val["hypothesis"], cfg,
-                                    desc=f"trial-{trial.number}")
-        accuracy = float((preds == val_labels).mean())
-        print(f"[tuning] trial {trial.number}: validation accuracy = {accuracy:.4f}")
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        return accuracy
+        prune_cb = _OptunaPruneCallback(trial)
+        trainer = Trainer(model=model, args=args, train_dataset=tokenized_train,
+                          eval_dataset=tokenized_val, data_collator=collator,
+                          compute_metrics=_accuracy_metrics, callbacks=[prune_cb])
+        try:
+            trainer.train()
+            accuracy = (prune_cb.last_accuracy if prune_cb.last_accuracy is not None
+                        else float(trainer.evaluate().get("eval_accuracy", 0.0)))
+            print(f"[tuning] trial {trial.number}: validation accuracy = {accuracy:.4f}")
+            return accuracy
+        finally:
+            del model, trainer
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     study = optuna.create_study(
         study_name=combo, direction="maximize",
         storage=f"sqlite:///{results_dir / 'optuna.db'}",
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
+        sampler=optuna.samplers.TPESampler(seed=cfg["seed"]),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0))
     target = n_trials if n_trials is not None else cfg["tuning"]["n_trials"]
     finished = len([t for t in study.trials if t.state.is_finished()])
     remaining = max(0, target - finished)
