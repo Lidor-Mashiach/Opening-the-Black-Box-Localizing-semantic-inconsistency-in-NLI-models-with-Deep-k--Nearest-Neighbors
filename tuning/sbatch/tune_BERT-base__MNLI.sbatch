@@ -12,8 +12,8 @@
 #SBATCH --output /home/lidorma/sbatches_and_output_files/NLU-Scripts/output-files/%x.out
 #SBATCH --mail-user=lidorma@post.bgu.ac.il
 #SBATCH --mail-type=END,FAIL
-#SBATCH --gpus=1
-#SBATCH --mem=16G
+#SBATCH --gpus=rtx_3090:1
+#SBATCH --mem=32G
 
 echo "SLURM_JOBID"=$SLURM_JOBID
 echo "SLURM_JOB_NODELIST"=$SLURM_JOB_NODELIST

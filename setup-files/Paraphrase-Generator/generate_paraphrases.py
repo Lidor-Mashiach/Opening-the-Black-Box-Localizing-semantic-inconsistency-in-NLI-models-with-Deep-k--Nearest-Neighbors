@@ -187,19 +187,50 @@ def _safe_write_bank(df, out_csv):
     tmp.replace(out_csv)
 
 
+def _ensure_local_model(model_id, subdir, model_class):
+    """Download a public HF model into the project ONCE, then always load from
+    local - so after the first run the generator makes ZERO HuggingFace hub
+    calls (no metadata check, fully offline), exactly like the raw datasets
+    (parquet) and the fine-tuning backbones (Models/raw/<MODEL>).
+
+    Concurrency-safe for many parallel shard jobs: each writes to its own temp
+    dir and atomically renames it into place; the first to finish wins and the
+    rest discard their copy, so the shared folder is never half-written. (Still,
+    a one-time warm-up run before the big parallel launch avoids N downloads.)
+    """
+    import os
+    import shutil
+    local = REPO_ROOT / "Models" / "raw" / subdir
+    if (local / "config.json").exists():
+        print(f"[cache] {subdir}: already local at {local} - no HF contact", flush=True)
+        return str(local)
+    print(f"[cache] {subdir}: fetching {model_id} into the project once -> {local}", flush=True)
+    tmp = local.with_name(f"{subdir}.tmp.{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    AutoTokenizer.from_pretrained(model_id).save_pretrained(tmp)
+    model_class.from_pretrained(model_id).save_pretrained(tmp)
+    try:
+        os.rename(tmp, local)           # atomic; fails if another job placed it first
+    except OSError:
+        shutil.rmtree(tmp, ignore_errors=True)   # lost the race - use the winner's copy
+    return str(local)
+
+
 class ParaphraseGenerator:
     """Paraphrase candidates from a seq2seq model - two decoding modes."""
 
     def __init__(self, cfg, device):
-        model_id = cfg["paraphrases"]["generator_model"]
-        print(f"[generator] loading {model_id}")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        source = _ensure_local_model(cfg["paraphrases"]["generator_model"],
+                                     "paraphrase-generator", AutoModelForSeq2SeqLM)
+        print(f"[generator] loading {source}")
+        self.tokenizer = AutoTokenizer.from_pretrained(source)
         gen_dtype = (torch.bfloat16 if device.type == "cuda"
                      and torch.cuda.is_bf16_supported() else torch.float32)
         # Cast after load via .to(dtype=...) rather than the from_pretrained
         # torch_dtype= kwarg: that kwarg is deprecated in newer transformers,
         # and .to() applies the dtype identically on every version, no warning.
-        self.model = (AutoModelForSeq2SeqLM.from_pretrained(model_id)
+        self.model = (AutoModelForSeq2SeqLM.from_pretrained(source)
                       .to(device=device, dtype=gen_dtype).eval())
         self.prefix = cfg["paraphrases"]["generator_prompt_prefix"]
         self.n_candidates = cfg["paraphrases"]["candidates_per_hypothesis"]
@@ -242,12 +273,14 @@ class EntailmentVerifier:
     """The double gate: symmetric equivalence + premise-relation preservation."""
 
     def __init__(self, cfg, device):
-        model_id = cfg["paraphrases"]["verifier_model"]
-        print(f"[verifier] loading {model_id}")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        source = _ensure_local_model(cfg["paraphrases"]["verifier_model"],
+                                     "paraphrase-verifier",
+                                     AutoModelForSequenceClassification)
+        print(f"[verifier] loading {source}")
+        self.tokenizer = AutoTokenizer.from_pretrained(source)
         ver_dtype = (torch.bfloat16 if device.type == "cuda"
                      and torch.cuda.is_bf16_supported() else torch.float32)
-        self.model = (AutoModelForSequenceClassification.from_pretrained(model_id)
+        self.model = (AutoModelForSequenceClassification.from_pretrained(source)
                       .to(device=device, dtype=ver_dtype).eval())
         self.batch_size = cfg["paraphrases"]["verifier_batch_size"]
         self.device = device
@@ -430,11 +463,14 @@ def fill_quota_over_rounds(records, generator, verifier, verified, tried,
 
 
 def _shard_paths(dataset_key, shard_index, num_shards):
-    """Output CSV + stats path for a shard (or the final bank when not sharded)."""
+    """Output CSV + stats path for a shard (or the final bank when not sharded).
+    Shards live in an organized paraphrases/shards/ subdirectory so they never
+    sit next to (or collide with) the final bank; merge_shards.py assembles them
+    into paraphrase_bank.csv and clears the subdirectory."""
     final = registry_bank_csv(dataset_key)
     if num_shards and num_shards > 1:
-        csv = final.with_name(
-            f"paraphrase_bank.part{shard_index:03d}of{num_shards:03d}.csv")
+        csv = (final.parent / "shards" /
+               f"paraphrase_bank.part{shard_index:03d}of{num_shards:03d}.csv")
         stats = csv.with_name(csv.name[:-4] + "_stats.json")
     else:
         csv = final

@@ -100,9 +100,9 @@ def merge_dataset(dataset_key, rebuild=False, keep_parts=False):
             f"to reassemble from shards", dataset=dataset_key)
         return
 
-    parts_dir = final_csv.parent
+    parts_dir = final_csv.parent / "shards"
     part_paths = sorted(p for p in parts_dir.glob("paraphrase_bank.part*of*.csv")
-                        if PART_RE.search(p.name))
+                        if PART_RE.search(p.name)) if parts_dir.exists() else []
     if not part_paths:
         log("WARN", f"no shard parts (paraphrase_bank.partIIIofNNN.csv) in "
             f"{parts_dir} - nothing to merge", dataset=dataset_key)
@@ -145,8 +145,12 @@ def merge_dataset(dataset_key, rebuild=False, keep_parts=False):
         for p in part_paths:
             p.unlink(missing_ok=True)
             p.with_name(p.name[:-4] + "_stats.json").unlink(missing_ok=True)
-        log("CLEAN", f"removed {len(part_paths)} shard part file(s) "
-            f"(pass --keep-parts to retain them)", dataset=dataset_key)
+        try:                                    # drop the now-empty shards/ dir
+            parts_dir.rmdir()
+        except OSError:
+            pass
+        log("CLEAN", f"removed {len(part_paths)} shard part file(s) and the "
+            f"shards/ dir (pass --keep-parts to retain them)", dataset=dataset_key)
     elif missing:
         log("BANK", "shard parts kept (some shards were missing) - re-run them "
             "and merge again", dataset=dataset_key)

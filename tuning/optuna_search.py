@@ -58,21 +58,42 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 
-def _precision_flags():
-    """Prefer bf16 (stable, no loss scaling) on capable GPUs, else fp16, else
-    fp32. bf16 avoids the fp16 gradient over/underflow that can stall or NaN
-    large-model fine-tuning - same speed on Ampere, more robust."""
-    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+def _precision_flags(cfg):
+    """Mixed-precision TrainingArguments flags from the config.
+
+    training.fp16 = auto/on/off decides WHETHER to use mixed precision;
+    training.amp = bf16 (default) / fp16 / fp32 decides the dtype. DeBERTa sets
+    amp: fp16 because its attention masking (finfo(dtype).min) overflows in bf16.
+    """
+    tr = cfg.get("training", {}) or {}
+    on = tr.get("fp16", "auto")
+    on = torch.cuda.is_available() if on == "auto" else bool(on)
+    if not on:
+        return {}
+    amp = tr.get("amp", "bf16")
+    if amp == "fp32":
+        return {}
+    if amp == "bf16" and torch.cuda.is_bf16_supported():
         return {"bf16": True}
-    if torch.cuda.is_available():
-        return {"fp16": True}
-    return {}
+    return {"fp16": True}   # explicit fp16, or bf16 asked for but unsupported
+
+
+def _logits_to_preds(logits, labels):
+    """Trainer preprocess_logits_for_metrics: reduce logits to class indices
+    BEFORE they accumulate. Handles models (BART and other seq2seq heads) whose
+    output is a TUPLE (logits, encoder_state, ...) - taking [0] avoids the
+    'inhomogeneous array' crash - and keeps eval memory tiny (only int preds
+    accumulate, not full logits), which also removes the eval-time OOM."""
+    if isinstance(logits, (tuple, list)):
+        logits = logits[0]
+    return logits.argmax(dim=-1)
 
 
 def _accuracy_metrics(eval_pred):
-    """compute_metrics for the Trainer: plain classification accuracy."""
-    logits, labels = eval_pred
-    preds = np.asarray(logits).argmax(axis=-1)
+    """compute_metrics: plain accuracy. preds are already argmaxed by
+    _logits_to_preds above."""
+    preds, labels = eval_pred
+    preds = np.asarray(preds)
     return {"accuracy": float((preds == np.asarray(labels)).mean())}
 
 
@@ -219,12 +240,14 @@ def run_study(model_key, dataset_key, n_trials=None):
             dataloader_num_workers=4,           # feed the GPU without input-pipeline stalls
             dataloader_pin_memory=True,
             report_to=[],
-            **_precision_flags(),               # bf16 (preferred) / fp16 / fp32
+            **_precision_flags(cfg),            # bf16 (default) / fp16 (DeBERTa) / fp32
         )
         prune_cb = _OptunaPruneCallback(trial)
         trainer = Trainer(model=model, args=args, train_dataset=tokenized_train,
                           eval_dataset=tokenized_val, data_collator=collator,
-                          compute_metrics=_accuracy_metrics, callbacks=[prune_cb])
+                          compute_metrics=_accuracy_metrics,
+                          preprocess_logits_for_metrics=_logits_to_preds,
+                          callbacks=[prune_cb])
         try:
             trainer.train()
             accuracy = (prune_cb.last_accuracy if prune_cb.last_accuracy is not None

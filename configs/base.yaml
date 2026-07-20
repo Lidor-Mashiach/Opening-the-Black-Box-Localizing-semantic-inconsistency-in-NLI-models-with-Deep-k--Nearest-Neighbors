@@ -29,18 +29,24 @@ training:
   batch_size: 32
   learning_rate: 2.0e-5
   max_seq_len: 128
-  fp16: auto                  # auto = use fp16 only when CUDA is available
+  fp16: auto                  # auto = use mixed precision only when CUDA is available
+  amp: bf16                   # mixed-precision dtype when on: bf16 (default) / fp16 / fp32.
+                              # DeBERTa overrides this to fp16 (its attention masking
+                              # overflows in bf16). fp32 = full precision (slowest, safest).
 
 encoding:
   batch_size: 64
   dtype: float16              # layer representations are stored as float16
 
 tuning:                       # Optuna hyper-parameter search (tuning/ directory)
-  n_trials: 40                # trials per (model, dataset) study. A large-model trial on the
-                              # 80k subsample takes ~1.5-2.5h, so 40 trials fit the 7-day
-                              # sbatch window; the sqlite study is resumable - if a job hits
-                              # the wall, resubmit and it continues from the next trial.
-  train_subsample: 80000      # seeded train rows per trial (speed); null = full train set
+  n_trials: 30                # trials per (model, dataset) study. With the TPE sampler
+                              # + the median pruner (weak trials stop after epoch 1), 30
+                              # trials find near-optimal hyper-parameters; the sqlite study
+                              # is resumable - if a job hits the wall, resubmit to continue.
+  train_subsample: 50000      # seeded train rows per trial. Only affects hyper-parameter
+                              # RANKING (final training uses the FULL train set), and the
+                              # ranking is stable well below the full data - 50k keeps the
+                              # signal while roughly halving trial time vs 80k. null = full.
   val_subsample: 5000         # seeded validation rows for the objective; null = all
   # Objective (maximize): validation accuracy of the fine-tuned NLI classifier.
   # Search space - one entry per tuned feature:

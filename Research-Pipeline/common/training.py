@@ -48,6 +48,11 @@ from .config_loader import load_config, step1_results_dir
 from .logging_utils import log
 
 
+# Ampere+ free speedup for the fp32 matmuls that remain under mixed precision.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+
 def prepare_checkpoint_dir(ckpt_dir, seed, find_last=None):
     """Seed-guarded resume: continue ONLY a crash of this very run.
 
@@ -141,8 +146,22 @@ def fine_tune(model_key, dataset_key):
         remove_columns=[c for c in train_ds.column_names if c != "label"],
     )
 
-    fp16 = cfg["training"]["fp16"]
-    fp16 = torch.cuda.is_available() if fp16 == "auto" else bool(fp16)
+    # Mixed precision: honour the config's on/off decision (fp16: auto = on when
+    # CUDA is present), but PREFER bf16 - it matches the paraphrase generator and
+    # the Optuna search, is stable for the large models (no loss-scaling
+    # over/underflow), and runs at the same speed on the rtx_3090s. Falls back to
+    # fp16, then fp32.
+    use_amp = cfg["training"]["fp16"]
+    use_amp = torch.cuda.is_available() if use_amp == "auto" else bool(use_amp)
+    precision = {}
+    if use_amp:
+        amp = cfg["training"].get("amp", "bf16")
+        if amp == "fp32":
+            precision = {}
+        elif amp == "bf16" and torch.cuda.is_bf16_supported():
+            precision = {"bf16": True}
+        else:                            # DeBERTa (amp: fp16), or bf16 unsupported
+            precision = {"fp16": True}
 
     args = TrainingArguments(
         output_dir=str(ckpt_dir),
@@ -155,8 +174,10 @@ def fine_tune(model_key, dataset_key):
         save_strategy="epoch",       # crash-resilience: keep one rolling checkpoint
         save_total_limit=1,
         logging_steps=100,
-        fp16=fp16,
+        dataloader_num_workers=4,    # feed the GPU without input-pipeline stalls
+        dataloader_pin_memory=True,
         report_to=[],
+        **precision,                 # bf16 (preferred) / fp16 / fp32
     )
     trainer = Trainer(model=model, args=args, train_dataset=tokenized,
                       data_collator=DataCollatorWithPadding(tokenizer))
