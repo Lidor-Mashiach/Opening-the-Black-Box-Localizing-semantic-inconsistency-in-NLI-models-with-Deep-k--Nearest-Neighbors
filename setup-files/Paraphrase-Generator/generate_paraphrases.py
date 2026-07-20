@@ -199,13 +199,17 @@ def _ensure_local_model(model_id, subdir, model_class):
     a one-time warm-up run before the big parallel launch avoids N downloads.)
     """
     import os
+    import platform
     import shutil
     local = REPO_ROOT / "Models" / "raw" / subdir
     if (local / "config.json").exists():
         print(f"[cache] {subdir}: already local at {local} - no HF contact", flush=True)
         return str(local)
     print(f"[cache] {subdir}: fetching {model_id} into the project once -> {local}", flush=True)
-    tmp = local.with_name(f"{subdir}.tmp.{os.getpid()}")
+    # node name + pid: shard jobs run on DIFFERENT nodes writing to the SAME
+    # shared filesystem - a bare pid can collide across nodes.
+    node = platform.node().split(".")[0] or "node"
+    tmp = local.with_name(f"{subdir}.tmp.{node}.{os.getpid()}")
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
     AutoTokenizer.from_pretrained(model_id).save_pretrained(tmp)
@@ -315,10 +319,14 @@ class EntailmentVerifier:
         backward equivalence, premise-relation), concatenate all three pair
         sets and score them in a single batched sweep - the GPU sees 3x the
         work per launch, which is far more efficient than three smaller
-        sweeps. Returns a boolean mask: candidate passes BOTH gates.
+        sweeps. Returns (equivalent, relation_ok) boolean masks.
         """
         if not candidates:
-            return np.array([], dtype=bool)
+            # The caller unpacks TWO masks; an empty batch is a real case in
+            # late retry rounds (dedup can filter every candidate of the
+            # stuck hypotheses) and must not crash the whole run.
+            empty = np.array([], dtype=bool)
+            return empty, empty
         n = len(candidates)
         # one big list: [fwd pairs ... | bwd pairs ... | relation pairs ...]
         first = list(hypotheses) + list(candidates) + list(premises)
@@ -545,9 +553,26 @@ def generate_for_dataset(dataset_key, generator, verifier, cfg, limit=None,
                          "para_idx": para_idx})
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    bank_df = pd.DataFrame(rows)
+    BANK_COLUMNS = ["pair_id", "premise", "hypothesis", "paraphrase",
+                    "label", "para_idx"]
+    # A shard can legitimately verify ZERO paraphrases (a very hard slice, or
+    # the early-stop firing on the whole slice). An empty DataFrame writes a
+    # header-less file that pd.read_csv chokes on at merge time
+    # (EmptyDataError) - so pin the columns explicitly: an empty part is then a
+    # valid 0-row CSV WITH a header, and the merge reads it as an empty frame.
+    bank_df = pd.DataFrame(rows, columns=BANK_COLUMNS)
     if sharded:
-        bank_df.to_csv(out_csv, index=False)   # part file; merge_shards.py assembles the bank safely
+        # ATOMIC part write: a job killed mid-write (timeout / preemption) must
+        # never leave a truncated part behind - the skip-if-exists check would
+        # treat it as done and merge_shards.py would silently build an
+        # incomplete bank. Write to a per-process temp file, then promote in
+        # one atomic replace; a crash leaves NO part, so a resubmit redoes the
+        # shard cleanly. The pid in the temp name also keeps an accidental
+        # double submission of the same shard from tearing each other's file.
+        import os as _os
+        tmp = out_csv.with_name(f"{out_csv.name[:-4]}.tmp.{_os.getpid()}.csv")
+        bank_df.to_csv(tmp, index=False)
+        tmp.replace(out_csv)
     else:
         _safe_write_bank(bank_df, out_csv)
 

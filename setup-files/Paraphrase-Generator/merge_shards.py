@@ -118,9 +118,68 @@ def merge_dataset(dataset_key, rebuild=False, keep_parts=False):
             dataset=dataset_key)
 
     banner("BANK", f"merging {len(part_paths)} shard part(s)", dataset=dataset_key)
-    merged = pd.concat([pd.read_csv(p) for p in part_paths], ignore_index=True)
+    REQUIRED = ("pair_id", "premise", "hypothesis", "paraphrase", "label", "para_idx")
+    frames, empty_parts = [], 0
+    for p in part_paths:
+        try:
+            df = pd.read_csv(p)
+        except pd.errors.EmptyDataError:
+            # A legitimately empty shard (a very hard slice verified nothing).
+            # Header-less empty file from an older generator version - count it
+            # and move on rather than crashing the whole assembly.
+            empty_parts += 1
+            log("WARN", f"  part {p.name}: empty (0 verified paraphrases) - "
+                f"skipped", dataset=dataset_key)
+            continue
+        missing_cols = [c for c in REQUIRED if c not in df.columns]
+        if missing_cols:
+            raise SystemExit(f"[merge] {p.name} is malformed - missing columns "
+                             f"{missing_cols}. Delete it and re-run that shard, "
+                             f"then merge again. Aborting WITHOUT writing the bank.")
+        if len(df) == 0:
+            empty_parts += 1
+            log("WARN", f"  part {p.name}: 0 rows (this slice verified nothing) "
+                f"- skipped", dataset=dataset_key)
+            continue
+        frames.append(df)
+        log("BANK", f"  part {p.name}: {len(df)} rows, "
+            f"{df['pair_id'].nunique()} hypotheses", dataset=dataset_key)
+    if not frames:
+        raise SystemExit(f"[merge] every {dataset_key} shard part is empty - "
+                         f"nothing to assemble. This usually means the gates "
+                         f"rejected everything (check a part's *_stats.json "
+                         f"gate_rejections). Aborting without writing the bank.")
+    if empty_parts:
+        log("WARN", f"{empty_parts} empty part(s) skipped; assembling the "
+            f"{len(frames)} non-empty part(s)", dataset=dataset_key)
+    merged = pd.concat(frames, ignore_index=True)
     before = len(merged)
+    # LAYER 1: exact-duplicate removal - the same (pair_id, para_idx) appearing
+    # in two parts (a re-run part, a stale part) collapses to one row.
     merged = merged.drop_duplicates(subset=["pair_id", "para_idx"])
+
+    # LAYER 2: per-hypothesis quota + contiguous para_idx. Disjoint shards mean
+    # a pair_id normally lives in ONE part, but if a stale part from a DIFFERENT
+    # --num-shards run lingered, the SAME hypothesis could arrive from two parts
+    # with different para_idx and blow past the quota (e.g. idx 0-4 here, 5-6
+    # there -> 7 paraphrases). Re-cap to the target and renumber para_idx 0..n-1
+    # per hypothesis so the bank ALWAYS honours the contract, no matter how the
+    # parts were produced.
+    try:
+        per_hyp = gp.PARAPHRASES_PER_HYPOTHESIS
+    except Exception:
+        per_hyp = 5
+    n_before_cap = len(merged)
+    merged = merged.sort_values(["pair_id", "para_idx"])
+    merged = merged.groupby("pair_id", sort=False).head(per_hyp).reset_index(drop=True)
+    # contiguous 0-based para_idx within each hypothesis (fixes any gaps)
+    merged["para_idx"] = merged.groupby("pair_id", sort=False).cumcount()
+    over_quota_trimmed = n_before_cap - len(merged)
+    if over_quota_trimmed:
+        log("WARN", f"{over_quota_trimmed} paraphrase row(s) trimmed to keep the "
+            f"per-hypothesis quota at {per_hyp} (a stale part from a different "
+            f"--num-shards run had extra para_idx) - para_idx renumbered "
+            f"contiguously", dataset=dataset_key)
     # SORT for a deterministic, reproducible file. Order does NOT affect the
     # hash-based val/test split (zlib.crc32(pair_id) in common/alignment.py),
     # so this is cosmetic + reproducible - never a correctness/leakage

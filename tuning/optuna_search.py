@@ -129,13 +129,49 @@ def _subsample(ds, n, seed):
     return ds.shuffle(seed=seed).select(range(n))
 
 
-def _suggest_params(trial, cfg):
+TUNED_PARAM_KEYS = ("learning_rate", "weight_decay", "warmup_ratio",
+                    "epochs", "batch_size")
+
+
+def _batch_options(cfg, model_key):
+    """The categorical batch-size options for this MODEL.
+
+    CRITICAL: decided from the model's OWN default batch (base+model configs
+    only), never from the fully merged cfg - a tuned overlay may have set
+    e.g. batch_size 16 for BERT-base, and reading THAT would wrongly switch
+    the search to the large-model options on a re-tuning run.
+    """
+    space = cfg["tuning"]["search_space"]["batch_size"]
+    model_default = load_config(model_key)["training"]["batch_size"]
+    return list(space["base_models"] if model_default >= 32
+                else space["large_models"])
+
+
+def _existing_tuned(tuned_path):
+    """(best accuracy, best params) already recorded in configs/tuned/<COMBO>.yaml.
+
+    Prefers the explicit tuned_meta.validation_accuracy field (written by this
+    code from now on); falls back to parsing the legacy header comment
+    ('# validation accuracy 0.9204'). Returns (None, None) when the file does
+    not exist; (None, params) when it exists but no accuracy is readable.
+    """
+    if not tuned_path.exists():
+        return None, None
+    text = tuned_path.read_text()
+    data = yaml.safe_load(text) or {}
+    params = data.get("training") or None
+    acc = (data.get("tuned_meta") or {}).get("validation_accuracy")
+    if acc is None:
+        import re
+        match = re.search(r"validation accuracy\s+([0-9]*\.?[0-9]+)", text)
+        acc = float(match.group(1)) if match else None
+    return (float(acc) if acc is not None else None), params
+
+
+def _suggest_params(trial, cfg, batch_options):
     """Draw one configuration from the per-feature search space."""
     space = cfg["tuning"]["search_space"]
     lr = space["learning_rate"]
-    default_batch = cfg["training"]["batch_size"]
-    batch_options = (space["batch_size"]["base_models"] if default_batch >= 32
-                     else space["batch_size"]["large_models"])
     return {
         "learning_rate": trial.suggest_float("learning_rate", float(lr["low"]),
                                              float(lr["high"]), log=bool(lr.get("log"))),
@@ -184,12 +220,40 @@ def run_study(model_key, dataset_key, n_trials=None):
 
     tuned_dir = CONFIGS_DIR / "tuned"
     tuned_path = tuned_dir / f"{combo}.yaml"
+    batch_options = _batch_options(cfg, model_key)
+
+    # ---- startup check: what does configs/tuned/ already hold? ----------
+    # A study may be RESET (optuna.db deleted) and rerun for extra optimum;
+    # the progress already banked in the tuned yaml must never be lost:
+    #   * the recorded best accuracy becomes the write floor - the overlay is
+    #     only overwritten by a STRICT improvement;
+    #   * the recorded best params are enqueued as the fresh study's first
+    #     trial, so the search resumes FROM the known optimum, not from zero.
+    prev_accuracy, prev_params = _existing_tuned(tuned_path)
+    if prev_params is not None:
+        if prev_accuracy is not None:
+            log("SELECT-K", f"existing tuned config found "
+                f"({tuned_path.relative_to(REPO_ROOT)}) with validation "
+                f"accuracy {prev_accuracy:.4f} - it will only be overwritten "
+                f"by a strict improvement", model_key, dataset_key)
+        else:
+            log("WARN", f"existing tuned config found but its accuracy is "
+                f"unreadable - treating it as the baseline to beat is not "
+                f"possible; new bests will overwrite it", model_key, dataset_key)
+    best_written = prev_accuracy      # the floor every write must beat
 
     def write_tuned_overlay(params, accuracy, n_done):
         """Persist the best hyper-parameters to the exact file train reads.
         Called the moment a new best appears, so a preempted job (golden
         ticket) always leaves the best-so-far already in place - no
-        checkpoints needed."""
+        checkpoints needed. GUARD: never downgrade an existing tuned config -
+        a reset study's early 'best' must not clobber a better past result."""
+        nonlocal best_written
+        if best_written is not None and accuracy <= best_written:
+            log("SELECT-K", f"best of THIS study ({accuracy:.4f}) does not beat "
+                f"the tuned config already on disk ({best_written:.4f}) - "
+                f"keeping the existing overlay", model_key, dataset_key)
+            return
         tuned_dir.mkdir(parents=True, exist_ok=True)
         overlay = {"training": {
             "learning_rate": float(params["learning_rate"]),
@@ -197,6 +261,9 @@ def run_study(model_key, dataset_key, n_trials=None):
             "epochs": int(params["epochs"]),
             "weight_decay": float(params["weight_decay"]),
             "warmup_ratio": float(params["warmup_ratio"]),
+        }, "tuned_meta": {
+            "validation_accuracy": float(accuracy),
+            "finished_trials": int(n_done),
         }}
         tmp = tuned_path.with_suffix(".yaml.tmp")
         with open(tmp, "w") as f:
@@ -204,22 +271,31 @@ def run_study(model_key, dataset_key, n_trials=None):
                     f"after {n_done} trial(s),\n# validation accuracy "
                     f"{accuracy:.4f}. Read automatically by load_config().\n"
                     f"# Updated live on every improvement, so an interrupted "
-                    f"study always leaves the best here.\n")
+                    f"study always leaves the best here.\n"
+                    f"# tuned_meta records the score this overlay achieved - a "
+                    f"rerun study only overwrites on a strict improvement.\n")
             yaml.safe_dump(overlay, f, sort_keys=False)
         tmp.replace(tuned_path)     # atomic
+        best_written = float(accuracy)
 
     def on_new_best(study, trial):
         if study.best_trial.number == trial.number:
             n_done = len([x for x in study.trials if x.state.is_finished()])
             write_tuned_overlay(trial.params, trial.value, n_done)
-            log("SELECT-K", f"new best: validation accuracy {trial.value:.4f} "
-                f"-> saved to {tuned_path.relative_to(REPO_ROOT)}",
-                model_key, dataset_key)
+            log("SELECT-K", f"new best of this study: validation accuracy "
+                f"{trial.value:.4f}", model_key, dataset_key)
 
-    eval_batch = 4 * max(int(cfg["training"]["batch_size"]), 8)  # eval has no grads -> bigger batch
+    # Evaluation is forward-only (no gradients / optimizer state), so it packs a
+    # far larger batch than training. On a 24GB rtx_3090 even eval batch 512
+    # peaks ~13-14GB ON TOP of the resident training state - big margin. 16x the
+    # train batch (=> 256 for the large models, 512 for BERT-base) makes the
+    # per-epoch validation pass that runs EVERY trial much faster, and is
+    # capped so it never risks OOM. This does NOT touch the tuned search space -
+    # eval batch is pure throughput, not a hyper-parameter.
+    eval_batch = min(16 * max(int(cfg["training"]["batch_size"]), 8), 512)
 
     def objective(trial):
-        params = _suggest_params(trial, cfg)
+        params = _suggest_params(trial, cfg, batch_options)
         print(f"[tuning] trial {trial.number}: {params}")
         torch.manual_seed(cfg["seed"])
         np.random.seed(cfg["seed"])
@@ -270,6 +346,30 @@ def run_study(model_key, dataset_key, n_trials=None):
     remaining = max(0, target - finished)
     print(f"[tuning] study '{combo}': {finished} finished trials, "
           f"{remaining} remaining (target {target})")
+
+    # Fresh study (e.g. optuna.db was deleted for a rerun) + a tuned yaml on
+    # disk -> seed the search with the KNOWN best so past progress is
+    # exploited, not rediscovered. TPE then explores around this proven
+    # point. Only enqueued when the params fit the current search space
+    # (a batch_size outside today's options would crash suggest_categorical).
+    if finished == 0 and remaining and prev_params:
+        seed_params = {k: prev_params[k] for k in TUNED_PARAM_KEYS
+                       if k in prev_params}
+        fits_space = (len(seed_params) == len(TUNED_PARAM_KEYS)
+                      and int(seed_params["batch_size"]) in
+                      [int(b) for b in batch_options])
+        if fits_space:
+            seed_params["batch_size"] = int(seed_params["batch_size"])
+            seed_params["epochs"] = int(seed_params["epochs"])
+            study.enqueue_trial(seed_params)
+            log("SELECT-K", f"fresh study + existing tuned config -> its "
+                f"params are enqueued as trial 0 (the search continues FROM "
+                f"the known optimum): {seed_params}", model_key, dataset_key)
+        else:
+            log("WARN", f"existing tuned params do not fit the current search "
+                f"space (batch options {batch_options}) - starting the fresh "
+                f"study without seeding", model_key, dataset_key)
+
     if remaining:
         study.optimize(objective, n_trials=remaining, callbacks=[on_new_best])
 

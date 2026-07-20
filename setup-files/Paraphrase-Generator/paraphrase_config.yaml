@@ -53,15 +53,20 @@ paraphrases:
   # search was removed - it caused the CUDA-OOM thrash and most of the runtime.
   generator_model: humarin/chatgpt_paraphraser_on_T5_base
   generator_prompt_prefix: "paraphrase: "
-  generation_batch_size: 64       # hypotheses per generation batch. bf16 + short
-                                  # max_new_tokens + sampling keep memory low, so
-                                  # this fits comfortably. Raise for more GPU
-                                  # utilisation; lower only on a genuine OOM.
+  generation_batch_size: 448      # hypotheses per generation batch. bf16 + short
+                                  # max_new_tokens + sampling keep memory low.
+                                  # Sized for a 24GB rtx_3090: generation phase
+                                  # peaks ~19GB WITH CUDA context + allocator
+                                  # fragmentation included (both bank-builder
+                                  # models stay resident). Lower to 256 on OOM.
 
-  verifier_batch_size: 256        # (premise/hypothesis, candidate) pairs the verifier
+  verifier_batch_size: 1280       # (premise/hypothesis, candidate) pairs the verifier
                                   # scores per forward pass. The verifier is a
                                   # classifier (one short forward), so it packs a
-                                  # much larger batch than generation.
+                                  # much larger batch than generation. This is the
+                                  # dominant phase: peaks ~19.6GB on a 24GB card
+                                  # WITH CUDA context + fragmentation included.
+                                  # Lower to 768 on OOM.
 
   # Verifier: the strongest public NLI model on the Hub (DeBERTa-v3-large,
   # 885K NLI pairs: MNLI+FEVER+ANLI+LingNLI+WANLI; 91.2% MNLI-m, SOTA ANLI).
