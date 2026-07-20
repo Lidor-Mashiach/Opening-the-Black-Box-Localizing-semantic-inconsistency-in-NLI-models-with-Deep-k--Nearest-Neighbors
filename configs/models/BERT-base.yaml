@@ -1,6 +1,6 @@
 # BERT-base - the smallest model in the study (12 layers, dim 768).
 model_key: BERT-base
-hf_id: bert-base-uncased
+hf_backbone: bert-base-uncased
 pooling: cls                  # representation = first ([CLS]) token, every layer
 
 # No OFFICIAL single-dataset NLI checkpoint exists for BERT-base; community

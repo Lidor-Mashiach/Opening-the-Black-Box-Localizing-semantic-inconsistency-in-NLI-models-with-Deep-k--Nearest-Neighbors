@@ -1,8 +1,8 @@
 # DeBERTa-large (24 layers, dim 1024).
-# The anchor paper uses DeBERTa-large (v1). If you prefer v3, change hf_id to
+# The anchor paper uses DeBERTa-large (v1). If you prefer v3, change hf_backbone to
 # microsoft/deberta-v3-large - nothing else in the pipeline changes.
 model_key: DeBERTa-large
-hf_id: microsoft/deberta-large
+hf_backbone: microsoft/deberta-large
 pooling: cls
 training:
   batch_size: 16

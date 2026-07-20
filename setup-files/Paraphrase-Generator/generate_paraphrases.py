@@ -196,8 +196,11 @@ class ParaphraseGenerator:
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         gen_dtype = (torch.bfloat16 if device.type == "cuda"
                      and torch.cuda.is_bf16_supported() else torch.float32)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_id, torch_dtype=gen_dtype).to(device).eval()
+        # Cast after load via .to(dtype=...) rather than the from_pretrained
+        # torch_dtype= kwarg: that kwarg is deprecated in newer transformers,
+        # and .to() applies the dtype identically on every version, no warning.
+        self.model = (AutoModelForSeq2SeqLM.from_pretrained(model_id)
+                      .to(device=device, dtype=gen_dtype).eval())
         self.prefix = cfg["paraphrases"]["generator_prompt_prefix"]
         self.n_candidates = cfg["paraphrases"]["candidates_per_hypothesis"]
         self.max_len_ratio = float(cfg["paraphrases"]["length_ratio"]["max"])
@@ -244,8 +247,8 @@ class EntailmentVerifier:
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         ver_dtype = (torch.bfloat16 if device.type == "cuda"
                      and torch.cuda.is_bf16_supported() else torch.float32)
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            model_id, torch_dtype=ver_dtype).to(device).eval()
+        self.model = (AutoModelForSequenceClassification.from_pretrained(model_id)
+                      .to(device=device, dtype=ver_dtype).eval())
         self.batch_size = cfg["paraphrases"]["verifier_batch_size"]
         self.device = device
         id2label = getattr(self.model.config, "id2label", None) or {}

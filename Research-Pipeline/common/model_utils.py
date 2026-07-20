@@ -61,12 +61,12 @@ def ensure_raw_backbone(cfg):
             f"no download needed", cfg.get("model_key"), cfg.get("dataset_key"))
         return local
     local.mkdir(parents=True, exist_ok=True)
-    log("TRAIN", f"downloading pretrained backbone '{cfg['hf_id']}' from "
+    log("TRAIN", f"downloading pretrained backbone '{cfg['hf_backbone']}' from "
         f"HuggingFace into the project -> {local}",
         cfg.get("model_key"), cfg.get("dataset_key"))
-    AutoTokenizer.from_pretrained(cfg["hf_id"]).save_pretrained(local)
+    AutoTokenizer.from_pretrained(cfg["hf_backbone"]).save_pretrained(local)
     AutoModelForSequenceClassification.from_pretrained(
-        cfg["hf_id"], num_labels=NUM_LABELS).save_pretrained(local)
+        cfg["hf_backbone"], num_labels=NUM_LABELS).save_pretrained(local)
     return local
 
 

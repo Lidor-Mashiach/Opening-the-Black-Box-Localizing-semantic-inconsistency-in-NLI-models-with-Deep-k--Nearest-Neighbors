@@ -1,6 +1,6 @@
 # RoBERTa-large (24 layers, dim 1024).
 model_key: RoBERTa-large
-hf_id: roberta-large
+hf_backbone: roberta-large
 pooling: cls                  # representation = first (<s>) token, every layer
 training:
   batch_size: 16              # large model - smaller batches
