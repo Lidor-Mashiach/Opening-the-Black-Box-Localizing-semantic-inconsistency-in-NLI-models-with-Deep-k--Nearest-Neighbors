@@ -7,8 +7,15 @@ pooling: cls
 training:
   batch_size: 16
   learning_rate: 1.0e-5
-  amp: fp16                   # DeBERTa's attention masking uses finfo(dtype).min,
-                              # which overflows in bf16 - fp16 is the stable choice.
+  amp: fp32                   # DeBERTa v1's attention masking does
+                              # masked_fill(mask, finfo(dtype).min). Under
+                              # autocast the scores are the low-precision dtype
+                              # but query_layer.dtype reports fp32, so filling
+                              # with finfo(fp32).min (-3.4e38) overflows in BOTH
+                              # fp16 (c10::Half) AND bf16 (c10::BFloat16) - a
+                              # known transformers-5.x DeBERTa-v1 bug. fp32 (no
+                              # autocast) is the only stable choice; TF32 matmul
+                              # (enabled in the trainers) keeps it fast on Ampere.
 
 # Optional published checkpoint: Microsoft's official DeBERTa-large fine-tuned
 # on MNLI (~91.3/91.1 m/mm acc) - the best published fit for MNLI.
