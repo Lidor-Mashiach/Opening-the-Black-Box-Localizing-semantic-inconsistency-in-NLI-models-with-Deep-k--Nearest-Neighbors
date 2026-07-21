@@ -1,0 +1,49 @@
+{
+  "dataset": "ANLI",
+  "split": "train",
+  "generator_model": "humarin/chatgpt_paraphraser_on_T5_base",
+  "verifier_model": "MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli",
+  "target_paraphrases_per_hypothesis": 5,
+  "policy": "keep partial (>=1); only 0-verified hypotheses are dropped",
+  "length_ratio_bounds": [
+    0.6,
+    1.5
+  ],
+  "pool_size": 162865,
+  "max_generation_rounds": 6,
+  "hypotheses_kept": 161395,
+  "hypotheses_at_full_quota": 155288,
+  "hypotheses_partial": 6107,
+  "paraphrase_count_histogram": {
+    "0": 1470,
+    "1": 1341,
+    "2": 1425,
+    "3": 1603,
+    "4": 1738,
+    "5": 155288
+  },
+  "fill_rounds_histogram": {
+    "1": 101981,
+    "2": 33831,
+    "3": 10289,
+    "4": 4811,
+    "5": 2709,
+    "6": 1667
+  },
+  "hypotheses_dropped_zero_verified": 1470,
+  "paraphrase_rows": 792392,
+  "gate_rejections": {
+    "rejected_length": 856053,
+    "rejected_equivalence": 918183,
+    "rejected_relation": 247816
+  },
+  "length_stats": {
+    "hypothesis_mean_words": 9.59,
+    "hypothesis_std_words": 5.05,
+    "paraphrase_mean_words": 10.5,
+    "paraphrase_std_words": 4.93,
+    "mean_length_ratio": 1.13
+  },
+  "output_csv": "/home/lidorma/projects/NLU-Project/Datasets/ANLI-Adversarial_NLI/paraphrases/paraphrase_bank.csv",
+  "shard": null
+}

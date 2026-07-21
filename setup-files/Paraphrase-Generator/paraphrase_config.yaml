@@ -53,20 +53,29 @@ paraphrases:
   # search was removed - it caused the CUDA-OOM thrash and most of the runtime.
   generator_model: humarin/chatgpt_paraphraser_on_T5_base
   generator_prompt_prefix: "paraphrase: "
-  generation_batch_size: 448      # hypotheses per generation batch. bf16 + short
-                                  # max_new_tokens + sampling keep memory low.
-                                  # Sized for a 24GB rtx_3090: generation phase
-                                  # peaks ~19GB WITH CUDA context + allocator
-                                  # fragmentation included (both bank-builder
-                                  # models stay resident). Lower to 256 on OOM.
+  generation_batch_size: 288      # hypotheses per generation batch (x5 candidates
+                                  # = 1440 sequences in flight). RESCALED from 4
+                                  # CONSISTENT real rtx_3090 crashes at batch=384,
+                                  # which all failed at ~21.3-21.4GB allocated (not
+                                  # fragmentation - expandable_segments kept that
+                                  # under 300MB) needing ~23.5GB total, i.e. batch
+                                  # 384 essentially saturates the 23.56GB card with
+                                  # zero margin. Linearly scaled down to land
+                                  # ~17.6GB (mid of the 17-19GB target), sized for
+                                  # MNLI's worse case (longer, more varied
+                                  # sentences than SNLI - MNLI OOM'd within its
+                                  # FIRST batch, SNLI survived one batch first).
+                                  # This is a genuine per-batch peak, not a growing
+                                  # leak (no_grad is used everywhere; SNLI died on
+                                  # batch 2, not batch 200) - so no extra cache-
+                                  # clearing hygiene is needed, just this number.
 
-  verifier_batch_size: 1280       # (premise/hypothesis, candidate) pairs the verifier
-                                  # scores per forward pass. The verifier is a
-                                  # classifier (one short forward), so it packs a
-                                  # much larger batch than generation. This is the
-                                  # dominant phase: peaks ~19.6GB on a 24GB card
-                                  # WITH CUDA context + fragmentation included.
-                                  # Lower to 768 on OOM.
+  verifier_batch_size: 768        # (premise/hypothesis, candidate) pairs the verifier
+                                  # scores per forward pass. This is a SEPARATE phase
+                                  # from the generation spike (though the generator
+                                  # weights stay resident), so it has the whole card
+                                  # minus ~1.2GB of weights. 768 peaks ~12GB with a
+                                  # wide margin - uses the GPU well without risk.
 
   # Verifier: the strongest public NLI model on the Hub (DeBERTa-v3-large,
   # 885K NLI pairs: MNLI+FEVER+ANLI+LingNLI+WANLI; 91.2% MNLI-m, SOTA ANLI).

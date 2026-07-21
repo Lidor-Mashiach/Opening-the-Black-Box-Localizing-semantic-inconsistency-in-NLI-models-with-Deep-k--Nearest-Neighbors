@@ -1,9 +1,9 @@
-# Written by tuning/run_tuning.py (Optuna) - best so far after 2 trial(s),
-# validation accuracy 0.9204. Read automatically by load_config().
+# Written by tuning/run_tuning.py (Optuna) - best so far after 40 trial(s),
+# validation accuracy 0.9216. Read automatically by load_config().
 # Updated live on every improvement, so an interrupted study always leaves the best here.
 training:
-  learning_rate: 5.715491938156607e-06
+  learning_rate: 5.92526629323802e-06
   batch_size: 16
   epochs: 3
-  weight_decay: 0.08661761457749352
-  warmup_ratio: 0.12022300234864176
+  weight_decay: 0.09712124998663546
+  warmup_ratio: 0.02976376363244096
