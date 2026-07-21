@@ -53,22 +53,17 @@ paraphrases:
   # search was removed - it caused the CUDA-OOM thrash and most of the runtime.
   generator_model: humarin/chatgpt_paraphraser_on_T5_base
   generator_prompt_prefix: "paraphrase: "
-  generation_batch_size: 288      # hypotheses per generation batch (x5 candidates
-                                  # = 1440 sequences in flight). RESCALED from 4
-                                  # CONSISTENT real rtx_3090 crashes at batch=384,
-                                  # which all failed at ~21.3-21.4GB allocated (not
-                                  # fragmentation - expandable_segments kept that
-                                  # under 300MB) needing ~23.5GB total, i.e. batch
-                                  # 384 essentially saturates the 23.56GB card with
-                                  # zero margin. Linearly scaled down to land
-                                  # ~17.6GB (mid of the 17-19GB target), sized for
-                                  # MNLI's worse case (longer, more varied
-                                  # sentences than SNLI - MNLI OOM'd within its
-                                  # FIRST batch, SNLI survived one batch first).
-                                  # This is a genuine per-batch peak, not a growing
-                                  # leak (no_grad is used everywhere; SNLI died on
-                                  # batch 2, not batch 200) - so no extra cache-
-                                  # clearing hygiene is needed, just this number.
+  generation_batch_size: 208      # DEFAULT hypotheses per generation batch (x5
+                                  # candidates = 1040 sequences in flight). This
+                                  # is the base value; each dataset OVERRIDES it in
+                                  # the per_dataset section below, because the OOM
+                                  # comes from sentence-length VARIANCE - a batch of
+                                  # unusually long sentences needs more than the
+                                  # average, so the average must sit well below the
+                                  # 23.5GB ceiling. Derived from a real crash: batch
+                                  # 288 ran at ~21.8GB average (no spike room) and
+                                  # died on heavy batches; 208 -> ~15.7GB average,
+                                  # ~7.8GB headroom for the longest batch.
 
   verifier_batch_size: 768        # (premise/hypothesis, candidate) pairs the verifier
                                   # scores per forward pass. This is a SEPARATE phase
@@ -83,3 +78,22 @@ paraphrases:
   # DOUBLE gate: (a) hypothesis <-> candidate entail each other;
   #              (b) (premise, candidate) label == the gold label.
   verifier_model: MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli
+# =====================================================================
+# PER-DATASET OVERRIDES
+# The block above is the shared DEFAULT. Each dataset below overrides only
+# the knobs that differ - anything omitted inherits the default. This exists
+# because the datasets differ in sentence length and difficulty
+# (SNLI < MNLI < ANLI), and the OOM is driven by length VARIANCE: a batch of
+# unusually long sentences needs more memory than the batch average, so the
+# harder/longer a dataset is, the more headroom (smaller batch) it needs.
+# Evidence from real rtx_3090 runs at batch 288 (~21.8GB avg): SNLI logged 2
+# allocator warnings, MNLI 10-62 - MNLI is markedly more memory-variable, and
+# ANLI (adversarial, longest) is expected to be worse still.
+# =====================================================================
+per_dataset:
+  SNLI:                         # shortest, most uniform (image-caption hypotheses)
+    generation_batch_size: 208  # avg ~15.7GB, ~7.8GB headroom for the longest batch
+  MNLI:                         # longer, multi-genre, high length variance
+    generation_batch_size: 192  # avg ~14.5GB, ~9.0GB headroom (MNLI showed the most warnings)
+  ANLI:                         # adversarial, longest/hardest -> the most margin
+    generation_batch_size: 160  # avg ~12.1GB, ~11.4GB headroom for its long premises

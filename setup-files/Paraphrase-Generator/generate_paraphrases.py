@@ -67,8 +67,16 @@ public models above - retraining YOUR models never invalidates it.
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+# Reduce allocator fragmentation BEFORE torch is imported. The OOM logs showed
+# ~3.7GB "reserved but unallocated" - classic fragmentation - and PyTorch itself
+# recommends this flag in that error. expandable_segments lets the allocator
+# grow/shrink segments instead of stranding reserved blocks, which reclaims most
+# of that wasted headroom during the memory-spiky generation phase.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]   # setup-files/Paraphrase-Generator/ -> repo root
 sys.path[:0] = [str(REPO_ROOT), str(REPO_ROOT / "Research-Pipeline")]
@@ -125,8 +133,22 @@ def load_generator_config(dataset_key):
             f"(plus a small configs/datasets/{dataset_key}.yaml).")
     cfg = load_config(dataset_key=dataset_key)
     with open(PARAPHRASE_CONFIG, "r", encoding="utf-8") as f:
-        cfg["paraphrases"] = yaml.safe_load(f)["paraphrases"]
+        raw = yaml.safe_load(f)
+    cfg["paraphrases"] = raw["paraphrases"]
     cfg["paraphrases"]["per_hypothesis"] = PARAPHRASES_PER_HYPOTHESIS
+
+    # Per-dataset overrides: SNLI < MNLI < ANLI in sentence length/difficulty,
+    # so each dataset can override any knob (batch sizes especially) on top of
+    # the shared defaults. Keeps ONE config file - the base block is the default
+    # and per_dataset[<KEY>] wins for that dataset only. Absent keys inherit the
+    # base, so a dataset with no entry behaves exactly as before.
+    overrides = (raw.get("per_dataset") or {}).get(dataset_key, {})
+    if overrides:
+        applied = {}
+        for key, value in overrides.items():
+            applied[key] = value
+            cfg["paraphrases"][key] = value
+        log("BANK", f"per-dataset overrides applied: {applied}", dataset=dataset_key)
 
     registry_dir = (REPO_ROOT / DATASETS[dataset_key]).resolve()
     if registry_dir != dataset_dir(cfg).resolve():
@@ -193,10 +215,14 @@ def _ensure_local_model(model_id, subdir, model_class):
     calls (no metadata check, fully offline), exactly like the raw datasets
     (parquet) and the fine-tuning backbones (Models/raw/<MODEL>).
 
-    Concurrency-safe for many parallel shard jobs: each writes to its own temp
-    dir and atomically renames it into place; the first to finish wins and the
-    rest discard their copy, so the shared folder is never half-written. (Still,
-    a one-time warm-up run before the big parallel launch avoids N downloads.)
+    Fully independent across parallel shard jobs: the only shared resource is
+    the READ-ONLY dataset, so there is nothing to contend. Each job downloads
+    into its OWN private HF cache (cache_dir under a per-job temp dir), so no
+    two jobs ever share HF's download filelock - which is what caused the
+    "Stale file handle" crash on the shared NFS home. Each job then writes its
+    own temp dir and atomically renames it into Models/raw/; the first to
+    finish wins and the rest discard their copy, so the folder is never
+    half-written.
     """
     import os
     import platform
@@ -212,8 +238,21 @@ def _ensure_local_model(model_id, subdir, model_class):
     tmp = local.with_name(f"{subdir}.tmp.{node}.{os.getpid()}")
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
-    AutoTokenizer.from_pretrained(model_id).save_pretrained(tmp)
-    model_class.from_pretrained(model_id).save_pretrained(tmp)
+
+    # from_pretrained(model_id) first pulls into HF's hub cache (default
+    # ~/.cache/huggingface), which on a shared home/NFS is the SAME path for
+    # every job and is guarded by a cross-process filelock -> concurrent shard
+    # jobs race it and crash with "OSError: [Errno 116] Stale file handle".
+    # These jobs are otherwise fully independent (the only shared thing is the
+    # READ-ONLY datasets), so the fix is simply: give THIS job its own private
+    # hub cache. No lock is shared, so there is nothing to contend.
+    job_cache = tmp / "_hf_cache"
+    job_cache.mkdir(parents=True, exist_ok=True)
+    hf_kwargs = {"cache_dir": str(job_cache)}
+    AutoTokenizer.from_pretrained(model_id, **hf_kwargs).save_pretrained(tmp)
+    model_class.from_pretrained(model_id, **hf_kwargs).save_pretrained(tmp)
+    shutil.rmtree(job_cache, ignore_errors=True)   # private scratch, not needed after save
+
     try:
         os.rename(tmp, local)           # atomic; fails if another job placed it first
     except OSError:
