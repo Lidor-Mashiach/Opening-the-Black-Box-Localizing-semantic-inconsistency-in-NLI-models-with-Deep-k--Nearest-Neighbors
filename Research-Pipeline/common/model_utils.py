@@ -70,7 +70,52 @@ def ensure_raw_backbone(cfg):
     return local
 
 
-def load_model_and_tokenizer(cfg, checkpoint=None):
+def ensure_finetuned_checkpoint(cfg, hf_id):
+    """Make sure an OFFICIAL published fine-tuned checkpoint is present INSIDE
+    the project, at Models/finetuned/<COMBO>/, and return that local path.
+
+    Mirrors ensure_raw_backbone but for ready-made fine-tuned weights (the
+    official *-mnli checkpoints). First call on a machine downloads the HF
+    weights + tokenizer straight into the project; every later call finds them
+    already there, so Phase A NEVER contacts HuggingFace again. Unlike the raw
+    backbone, num_labels is NOT forced here - the published head already has
+    its 3 classes with its own id2label order, which prediction_remap() maps
+    to our convention at inference time. The download is written to a temp
+    dir and atomically renamed, so an interrupted download never leaves a
+    half-written checkpoint that would load silently corrupted.
+    """
+    import os
+    import platform
+    import shutil
+    from .config_loader import finetuned_checkpoint_dir
+    from .logging_utils import log
+    local = finetuned_checkpoint_dir(cfg)
+    marker = local / "config.json"
+    if marker.exists():
+        log("TRAIN", f"fine-tuned checkpoint already in the project at {local} "
+            f"- no download needed", cfg.get("model_key"), cfg.get("dataset_key"))
+        return local
+
+    node = platform.node().split(".")[0] or "node"
+    tmp = local.with_name(f"{local.name}.tmp.{node}.{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    log("TRAIN", f"downloading official fine-tuned checkpoint '{hf_id}' from "
+        f"HuggingFace into the project -> {local}",
+        cfg.get("model_key"), cfg.get("dataset_key"))
+    # private per-process HF cache so concurrent combos never share a download
+    # lock (the "Stale file handle" failure mode on shared filesystems)
+    job_cache = tmp / "_hf_cache"
+    job_cache.mkdir(parents=True, exist_ok=True)
+    hf_kwargs = {"cache_dir": str(job_cache)}
+    AutoTokenizer.from_pretrained(hf_id, **hf_kwargs).save_pretrained(tmp)
+    AutoModelForSequenceClassification.from_pretrained(hf_id, **hf_kwargs).save_pretrained(tmp)
+    shutil.rmtree(job_cache, ignore_errors=True)
+    try:
+        os.rename(tmp, local)          # atomic; first job to finish wins
+    except OSError:
+        shutil.rmtree(tmp, ignore_errors=True)   # lost the race - use the winner's copy
+    return local
     """Load tokenizer + 3-way classification head.
 
     checkpoint : path to a fine-tuned model directory (Step-1 output).

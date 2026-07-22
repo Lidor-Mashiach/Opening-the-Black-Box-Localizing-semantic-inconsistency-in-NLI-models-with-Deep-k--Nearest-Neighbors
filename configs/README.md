@@ -8,7 +8,7 @@ pipeline scripts.
 These files are **settings, not weights** - they exist before any model or
 dataset is downloaded, and they are what TELLS the pipeline which backbone to
 fetch (`hf_id`) and where each dataset lives. A `models/<MODEL>.yaml` is not
-the model; it is the recipe for fetching and configuring it. The
+the model - it is the recipe for fetching and configuring it. The
 `tuned/<COMBO>.yaml` overlay (written later by Optuna) overrides only the
 training block - learning rate, batch size, epochs - on top of the base.
 
@@ -26,7 +26,7 @@ to retrain with them, delete the combination's
 rebuilt automatically at every run start).
 
 `common/config_loader.py::load_config(model_key, dataset_key)` performs the
-merge; every script in the pipeline goes through it.
+merge - every script in the pipeline goes through it.
 
 ## Files
 
@@ -36,7 +36,7 @@ merge; every script in the pipeline goes through it.
 | `tuned/<MODEL>__<DATASET>.yaml` | Optional best-hyper-parameter overlay, written automatically by `tuning/run_tuning.py` |
 | `models/BERT-base.yaml` | `hf_id`, pooling (`cls`) |
 | `models/RoBERTa-large.yaml` | `hf_id`, pooling, smaller batch + lower LR |
-| `models/DeBERTa-large.yaml` | `hf_id` (v1; v3 swap documented inline), pooling, overrides |
+| `models/DeBERTa-large.yaml` | `hf_id` (v1, v3 swap documented inline), pooling, overrides |
 | `models/BART-large.yaml` | `hf_id`, pooling `eos` (encoder-decoder), overrides |
 | `datasets/SNLI.yaml` | `hf_id`, folder, split mapping |
 | `datasets/MNLI.yaml` | `hf_id`, folder, split mapping (matched-dev = validation, mismatched-dev = test) |
@@ -58,9 +58,9 @@ authors' own organizations** - the best published fits for MNLI:
 | BART-large x MNLI | `facebook/bart-large-mnli` | Facebook (Meta) | ~89.9 / 90.0 (m/mm) | https://huggingface.co/facebook/bart-large-mnli |
 
 Everything else is fine-tuned locally by Step-1, because: (a) no **official**
-single-dataset SNLI / ANLI checkpoints exist for these architectures;
+single-dataset SNLI / ANLI checkpoints exist for these architectures,
 (b) available community mixes (e.g. SNLI+MNLI+FEVER+ANLI models) would
-violate the project's dataset-separation principle; (c) BERT-base has no
+violate the project's dataset-separation principle. (c) BERT-base has no
 official NLI checkpoint at all - and is the cheapest to fine-tune.
 
 ## Published NLI Checkpoints (optional)
@@ -68,8 +68,18 @@ official NLI checkpoint at all - and is the cheapest to fine-tune.
 A model YAML may declare `nli_checkpoints: {<DATASET>: <hf_id>}` - a
 published, **single-dataset** fine-tuned checkpoint that lets the combination
 skip `train.py` entirely (`resolve_checkpoint` prefers a local Step-1
-checkpoint, then falls back to this). Predictions are auto-remapped to the
-dataset label convention via the checkpoint's `id2label`.
+checkpoint, then falls back to this). The published weights are downloaded
+into the project once (`Models/finetuned/<MODEL>__<DATASET>/`) and loaded
+locally on every later run, so Phase A never re-contacts HuggingFace.
+Predictions are auto-remapped to the dataset label convention via the
+checkpoint's `id2label`.
+
+Skipping `train.py` skips only local training, not the experiment: the
+official checkpoint is a fine-tuned model, so Step-1 still runs it over the
+train split to build this model's correct-only subset (the same "which rows
+the model classifies correctly" filter every combination uses). There is no
+Optuna for these three combinations - a ready-made fine-tuned checkpoint has
+no training hyper-parameters to search.
 
 The three official MNLI checkpoints are pre-declared (RoBERTa / DeBERTa /
 BART - the best published fits for MNLI). SNLI / ANLI / BERT-base have no

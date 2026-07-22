@@ -84,6 +84,19 @@ def raw_backbone_dir(cfg):
     return MODELS_DIR / "raw" / cfg["model_key"]
 
 
+def finetuned_checkpoint_dir(cfg):
+    """<repo>/Models/finetuned/<MODEL>__<DATASET>/ - the local home for an
+    OFFICIAL published fine-tuned checkpoint (declared under nli_checkpoints).
+
+    Downloaded from HuggingFace ONCE into the project, then loaded locally on
+    every later run so Phase A never contacts HuggingFace again. This sits
+    beside Models/raw/<MODEL>/ (the pretrained backbones): raw/ holds
+    un-fine-tuned backbones, finetuned/ holds ready-made fine-tuned weights,
+    each in its own clearly-named subfolder. Weights are heavy, so .gitignore
+    keeps them local while the folder itself is tracked."""
+    return MODELS_DIR / "finetuned" / combo_name(cfg)
+
+
 def combo_runtime_dir(cfg):
     """<repo>/Runtime-Data/<MODEL>/<DATASET> - ALL run-derived data of one
     combination: the reduced dataset copy, the hypothesis/paraphrase
@@ -146,9 +159,13 @@ def resolve_checkpoint(cfg):
 
     1. The locally fine-tuned Step-1 checkpoint (results/checkpoints/final).
     2. A published, single-dataset NLI checkpoint declared in the model's
-       YAML under  nli_checkpoints: {<DATASET>: <hf_id>}  - this lets a
-       combination skip train.py entirely (predictions are auto-remapped to
-       the dataset label convention via the checkpoint's id2label).
+       YAML under  nli_checkpoints: {<DATASET>: <hf_id>}. It is downloaded
+       ONCE into Models/finetuned/<COMBO>/ and loaded from there ever after,
+       so Phase A never contacts HuggingFace again (predictions are
+       auto-remapped to the dataset label convention via the checkpoint's
+       id2label). The download itself lives in
+       model_utils.ensure_finetuned_checkpoint - called here so every caller
+       gets a ready local path.
 
     Raises with clear guidance when neither exists.
     """
@@ -157,8 +174,8 @@ def resolve_checkpoint(cfg):
         return local
     published = (cfg.get("nli_checkpoints") or {}).get(cfg["dataset_key"])
     if published:
-        print(f"[checkpoint] using published NLI checkpoint: {published}")
-        return published
+        from . import model_utils
+        return model_utils.ensure_finetuned_checkpoint(cfg, published)
     raise FileNotFoundError(
         f"No checkpoint for {cfg['model_key']} x {cfg['dataset_key']}: "
         f"run Step-1 train.py, or declare nli_checkpoints in "

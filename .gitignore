@@ -26,14 +26,24 @@ Runtime-Data/*
 # (configs/tuned/, light) ARE committed so no machine needs to re-run Optuna.
 Models/raw/*
 !Models/raw/.gitkeep
+Models/finetuned/*
+!Models/finetuned/.gitkeep
 
 # raw dataset dumps (re-download with Datasets/download_datasets.py)
 Datasets/*/raw/*
 !Datasets/*/raw/.keep
 
-# paraphrase-bank working artifacts (the bank itself IS tracked)
+# paraphrase-bank working artifacts
 Datasets/*/paraphrases/paraphrase_bank.backup.csv
 Datasets/*/paraphrases/paraphrase_bank.tmp.csv
+# sharded generation part files - heavy intermediates, merged into the bank
+# then no longer needed (merge_shards.py assembles the bank from them)
+Datasets/*/paraphrases/shards/
+
+# ---------- CSV files: never committed, added manually ----------
+# No CSV is pushed - not the paraphrase banks, not the per-row result data,
+# not the summary tables. They are provided manually on each machine.
+*.csv
 
 # ---------- Caches / tools ----------
 .cache/
@@ -50,8 +60,8 @@ Thumbs.db
 tuning/results/**/optuna.db
 
 # ---------- Research results ----------
-# Per-run archives + the cross-run summary ARE tracked by default, so a
-# GitHub push captures your findings. They are small (CSVs + PNGs). To keep
-# them local instead, uncomment:
+# Per-run archives + the cross-run summary: their PNG plots ARE tracked so a
+# GitHub push captures the visual findings. The CSV tables are covered by the
+# blanket *.csv rule above and are provided manually. To keep the whole run
+# archive local instead, uncomment:
 # Research-Pipeline/PhaseA/Step-4_Consistency-and-Diagnosis/results/runs/
-# Research-Pipeline/PhaseA/Step-4_Consistency-and-Diagnosis/results/runs_summary.csv
