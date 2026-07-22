@@ -4,7 +4,7 @@ A **standalone module, deliberately outside the pipeline**. It is run ONCE
 per dataset, on a GPU machine, to create the static paraphrase banks at
 `Datasets/<dataset>/paraphrases/paraphrase_bank.csv`. The main runner only
 **checks** that the banks exist - if one is missing it prints the command
-below and **exits**; it never generates paraphrases itself. Every run of the
+below and **exits** - it never generates paraphrases itself. Every run of the
 research therefore uses the exact same static bank, which is what makes the
 results measurable - and the banks themselves a shareable contribution to
 the community.
@@ -20,7 +20,7 @@ methodology:
   layer-distance between a hypothesis and its paraphrase, the paraphrase
   consistency - is computed on **train-derived hypotheses and their
   paraphrases**. Step-1 trains on `train`, filters to the hypotheses the
-  model got right (`train_correct.csv`), and encodes those; Step-2 encodes
+  model got right (`train_correct.csv`), and encodes those - Step-2 encodes
   their paraphrases. All of it lives in `train`.
 * `validation` and `test` are used **only** for a separate baseline-accuracy
   number (`evaluate.py`) - they never enter the paraphrase pool, the reduced
@@ -51,15 +51,53 @@ python setup-files/Paraphrase-Generator/generate_paraphrases.py --limit 50      
   `paraphrases_ANLI.sbatch` - so all three banks build at once on three nodes,
   cutting wall-clock time roughly threefold.
 
+### Sharding (9-way parallelism, ~3x faster than the 3 whole-dataset jobs)
+
+For maximum speed each dataset's train split can itself be split into disjoint
+**shards** that run as independent jobs, then merged:
+
+* **`--num-shards N --shard-index I`** - process only shard `I` of `N` for the
+  given dataset. Each shard writes its OWN part file under
+  `Datasets/<DATASET>/paraphrases/shards/paraphrase_bank.partIIIofNNN.csv`.
+  The slices are disjoint and covering (integer floor-division on the pool
+  order), and every shard job builds the identical pool in the identical order,
+  so the seam between shard I and I+1 can never duplicate or drop a hypothesis.
+  Shard jobs never reset derived data and never touch each other's part file
+  (per-process atomic writes), so all 9 jobs (3 datasets x 3 shards) run
+  concurrently with zero conflicts.
+* Nine ready-made sbatch files (`paraphrases_<DATASET>_s<0..2>.sbatch`) plus
+  `run_all_shard_generators.sh` (submits all nine) live in the sbatch folder.
+* Each job downloads the generator + verifier into its OWN private HF cache
+  (`cache_dir` under a per-job temp dir), so concurrent shards never race HF's
+  shared download filelock (the cause of "Stale file handle" on shared NFS).
+* **After all shards of a dataset finish**, assemble the bank ONCE:
+  `python setup-files/Paraphrase-Generator/merge_shards.py [--datasets <DATASET>]`.
+  The merge reads only that dataset's `shards/`, deduplicates on
+  `(pair_id, para_idx)`, re-caps each hypothesis to the per-hypothesis quota
+  (so a stale part from a different `--num-shards` run can never push a
+  hypothesis over quota), renumbers `para_idx` contiguously, sorts
+  deterministically, and writes the final `paraphrase_bank.csv` to the exact
+  path Phase A reads. An empty shard (a very hard slice that verified nothing)
+  is skipped gracefully - if every shard is empty the merge aborts without
+  writing a bank.
+
+### Per-dataset overrides
+
+The generation knobs in `paraphrase_config.yaml` have a `per_dataset:` block:
+the base values are defaults, and each dataset overrides only what differs.
+SNLI < MNLI < ANLI in sentence length/difficulty, so the harder/longer a
+dataset is, the more memory headroom (smaller generation batch) it gets:
+SNLI 208, MNLI 192, ANLI 160. Anything not overridden inherits the base.
+
 GPU strongly recommended - the run is hundreds of thousands of transformer
 forward passes (generation + a single fused verifier pass per candidate
 batch): a few hours on a modern GPU for the full train splits, days on a CPU.
-The script prints a loud `[DEVICE]` line with exactly what it found; a
+The script prints a loud `[DEVICE]` line with exactly what it found - a
 `no CUDA GPU` message on a Windows machine with an NVIDIA card almost always
 means the CPU-only torch wheel - run `python setup-files/setup_env.py` once
 and it repairs the build automatically. Tip: set `HF_TOKEN` to avoid
 HuggingFace download throttling on the first run. Afterwards, commit the banks
-to git and never run this again (an existing bank is SKIPPED; regeneration
+to git and never run this again (an existing bank is SKIPPED - regeneration
 requires an explicit `--rebuild`, which still preserves the previous bank as
 `paraphrase_bank.backup.csv` and writes atomically).
 
@@ -67,15 +105,15 @@ requires an explicit `--rebuild`, which still preserves the previous bank as
 
 | Gate | Enforces | How |
 |------|----------|-----|
-| Fluency / syntax | Well-formed English | `humarin/chatgpt_paraphraser_on_T5_base` - the leading open paraphraser (T5 trained on 6.3M ChatGPT paraphrase pairs), diverse beam search + repetition penalties per its model card |
+| Fluency / syntax | Well-formed English | `humarin/chatgpt_paraphraser_on_T5_base` - the leading open paraphraser (T5 trained on 6.3M ChatGPT paraphrase pairs), nucleus (top-p) sampling + repetition penalties |
 | Length / complexity | Same level as the hypothesis, per dataset | Word-count ratio inside `length_ratio` (0.6-1.5) |
 | Same meaning | Paraphrase == hypothesis semantically | hypothesis <-> candidate must entail **each other** (`MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli` - the strongest public NLI model) |
 | Same logical relation | `Premise:Paraphrase == Premise:Hypothesis` | The verifier's label for (premise, candidate) must **equal the gold label** |
-| Target quota (partial kept) | Up to 3 verified paraphrases per hypothesis | FRESH-sampling rounds (new seed + mild temperature ramp) add candidates until a hypothesis reaches 3 or the rounds stop. A hypothesis that reaches fewer is **kept with what it has** (1 or 2); only a hypothesis with **zero** verified paraphrases is dropped. An early-stop halts the rounds once they stop producing anything, so the run never grinds for hours on an unfillable remainder. |
+| Target quota (partial kept) | Up to 5 verified paraphrases per hypothesis | FRESH-sampling rounds (new seed + mild temperature ramp) add candidates until a hypothesis reaches 5 or the rounds stop. A hypothesis that reaches fewer is **kept with what it has** (1-4) - only a hypothesis with **zero** verified paraphrases is dropped. An early-stop halts the rounds once they stop producing anything, so the run never grinds for hours on an unfillable remainder. |
 
 This is the anchor paper's protocol (symmetric equivalence entailment)
 **plus** two stricter gates. It is the strongest *automatic* guarantee
-available; for the report we recommend also citing the per-dataset stats
+available - for the report we recommend also citing the per-dataset stats
 below and a small human spot-check (~100 rows).
 
 ### Is Using an NLI Model to Verify NLI Paraphrases Circular?
@@ -96,7 +134,7 @@ No, and it is worth stating explicitly why:
   line in `paraphrase_config.yaml`, no per-dataset special-casing. Its name
   lists the corpora IT was fine-tuned on (MNLI+FEVER+ANLI+LingNLI+WANLI, to
   make it a strong general-purpose NLI classifier) - that is unrelated to
-  which of the three research datasets it verifies; it verifies all three
+  which of the three research datasets it verifies - it verifies all three
   equally.
 
 **The real, known limitation** (worth stating in the write-up, not hiding):
@@ -115,8 +153,8 @@ At the top of `generate_paraphrases.py`:
 
 | Global | Now | What it controls |
 |--------|-----|------------------|
-| `PARAPHRASES_PER_HYPOTHESIS` | 3 | Target verified paraphrases per hypothesis; hypotheses that reach fewer are kept partial, only zero-verified are dropped - change the number, rerun, done |
-| `DATASETS` | SNLI / MNLI / ANLI | KEY = dataset name, VALUE = its folder (repo-relative); the bank lands at `<VALUE>/paraphrases/paraphrase_bank.csv` |
+| `PARAPHRASES_PER_HYPOTHESIS` | 5 | Target verified paraphrases per hypothesis - hypotheses that reach fewer are kept partial, only zero-verified are dropped - change the number, rerun, done |
+| `DATASETS` | SNLI / MNLI / ANLI | KEY = dataset name, VALUE = its folder (repo-relative) - the bank lands at `<VALUE>/paraphrases/paraphrase_bank.csv` |
 
 **Adding a dataset** = one line in `DATASETS` **+** a small
 `configs/datasets/<KEY>.yaml` (`hf_id`, `dir`, splits - the pipeline needs it
@@ -129,12 +167,12 @@ exact instruction, and a registry-vs-configs path mismatch aborts loudly
 | Knob | Default | Meaning |
 |------|---------|---------|
 | `pool_size` | `null` | `null` = NO sampling: paraphrase EVERY hypothesis in the whole train split. Set an integer only for a quick smoke test. |
-| `candidates_per_hypothesis` | 12 | Raw candidates per round, before the gates (one beam call yields all 12; more => fewer rounds needed) |
-| `max_generation_rounds` | 6 | Hard cap on rounds; the early-stop below usually ends the loop sooner |
+| `candidates_per_hypothesis` | 12 | Raw candidates per round, before the gates (one nucleus-sampling call yields all 12 - more => fewer rounds needed) |
+| `max_generation_rounds` | 6 | Hard cap on rounds - the early-stop below usually ends the loop sooner |
 | `early_stop_patience` | 2 | Stop retrying once this many consecutive rounds add zero new paraphrases (the generator is stuck on the hard remainder) - prevents hours that end in failure |
 | `length_ratio.min/max` | 0.6 / 1.5 | Allowed paraphrase/hypothesis word-count ratio |
-| `generation_batch_size` | 64 | Hypotheses per generation batch - large batch keeps the GPU busy (8 left it mostly idle) |
-| `verifier_batch_size` | 256 | (sentence, candidate) pairs the verifier scores per forward pass - the classifier packs a much bigger batch than generation |
+| `generation_batch_size` | 208 (default) | Hypotheses per generation batch. The generator emits 5 candidates per hypothesis, so this is 208x5 sequences in flight - generation is the memory bottleneck. Each dataset sets its own value in the `per_dataset` block below (SNLI 208, MNLI 192, ANLI 160), sized from rtx_3090 runs to peak ~16-18GB with margin for sentence-length variance |
+| `verifier_batch_size` | 768 | (sentence, candidate) pairs the verifier scores per forward pass - a separate phase from generation, so it packs a much larger batch (~12GB on a 24GB card) |
 | `generator_model`, `generator_prompt_prefix` | see file | The paraphraser + its prompt format |
 | `verifier_model` | MoritzLaurer/DeBERTa-v3-large-... | The double-gate NLI verifier |
 
@@ -152,11 +190,11 @@ audit stays associated with its dataset. Fields:
 |-------|---------|
 | `split` | Always `train` - the only split paraphrased |
 | `pool_size`, `hypotheses_kept`, `hypotheses_at_full_quota`, `hypotheses_partial`, `hypotheses_dropped_zero_verified` | Pool -> kept accounting: how many reached the full target, how many were kept partial (1-2), how many had zero and were dropped |
-| `paraphrase_count_histogram` | How many hypotheses ended with 0/1/2/3 verified paraphrases |
-| `fill_rounds_histogram` | How many hypotheses reached the full quota at each round (round 1 = beam, 2+ = fresh sampling) |
+| `paraphrase_count_histogram` | How many hypotheses ended with 0/1/2/3/4/5 verified paraphrases |
+| `fill_rounds_histogram` | How many hypotheses reached the full quota at each round (every round uses fresh nucleus sampling) |
 | `gate_rejections` | Rejected candidates per gate: `rejected_length` / `rejected_equivalence` / `rejected_relation` |
 | `length_stats` | Mean+-std word counts, hypotheses vs paraphrases, + mean ratio - proof that difficulty tracks the dataset |
 | `generator_model`, `verifier_model`, `length_ratio_bounds`, `target_paraphrases_per_hypothesis`, `policy` | Full provenance of how the bank was made |
 
-It is an **output/audit artifact - do not edit it**; the knobs live in
+It is an **output/audit artifact - do not edit it** - the knobs live in
 `paraphrase_config.yaml`.

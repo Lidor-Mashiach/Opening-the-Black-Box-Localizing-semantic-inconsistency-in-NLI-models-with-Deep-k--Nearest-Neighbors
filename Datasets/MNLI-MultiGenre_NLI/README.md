@@ -14,7 +14,7 @@
 | Subfolder | Contents | Produced by |
 |-----------|----------|------------|
 | `raw/` | `train / validation / test .parquet` - unified schema (`premise`, `hypothesis`, `label`, `pair_id`) | `../download_datasets.py` |
-| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (up to 3 verified paraphrases per hypothesis; kept partial, only zero-verified dropped) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
+| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (up to 5 verified paraphrases per hypothesis - kept partial, only zero-verified dropped) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
 
 > The official MNLI test labels are private. Following common practice, the matched dev set serves as **validation** and the mismatched dev set as the held-out **test** set (see `configs/datasets/MNLI.yaml`).
 

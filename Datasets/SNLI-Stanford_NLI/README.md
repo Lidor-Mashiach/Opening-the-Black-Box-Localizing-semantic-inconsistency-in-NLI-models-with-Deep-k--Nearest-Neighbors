@@ -1,6 +1,6 @@
 # SNLI - Stanford Natural Language Inference
 
-570k human-written sentence pairs; premises are Flickr30k image captions, hypotheses were written by crowdworkers. The first large-scale NLI corpus.
+570k human-written sentence pairs - premises are Flickr30k image captions, hypotheses were written by crowdworkers. The first large-scale NLI corpus.
 
 | | |
 |---|---|
@@ -14,7 +14,7 @@
 | Subfolder | Contents | Produced by |
 |-----------|----------|------------|
 | `raw/` | `train / validation / test .parquet` - unified schema (`premise`, `hypothesis`, `label`, `pair_id`) | `../download_datasets.py` |
-| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (up to 3 verified paraphrases per hypothesis; kept partial, only zero-verified dropped) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
+| `paraphrases/` | `paraphrase_bank.csv` - the static, model-independent bank (up to 5 verified paraphrases per hypothesis - kept partial, only zero-verified dropped) - see [paraphrases/README.md](paraphrases/README.md) | [`setup-files/Paraphrase-Generator/`](../../setup-files/Paraphrase-Generator/README.md) |
 
 Rows with label `-1` (no gold consensus) are dropped at load time.
 

@@ -1,13 +1,13 @@
 # 2 Step-2 - Paraphrase Inference
 
 The actual test: every (premise, **paraphrase**) pair goes through the
-fine-tuned model. Predictions feed the consistency metrics (Step-4);
+fine-tuned model. Predictions feed the consistency metrics (Step-4)
 representations feed DkNN Credibility and Layer Distance (Step-3).
 
 ## Input
 
 The **dataset-level paraphrase bank**
-(`Datasets/<dataset>/paraphrases/paraphrase_bank.csv` - up to 3 verified
+(`Datasets/<dataset>/paraphrases/paraphrase_bank.csv` - up to 5 verified
 paraphrases per hypothesis, model-independent), **intersected here
 with this model's correct-only set**: only rows whose `pair_id` appears in
 `Runtime-Data/<MODEL>/<DATASET>/train_correct.csv` (the reduced copy built by

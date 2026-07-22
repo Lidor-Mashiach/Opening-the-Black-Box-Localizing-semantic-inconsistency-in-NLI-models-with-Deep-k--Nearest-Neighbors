@@ -35,7 +35,12 @@ training:
                               # overflows in bf16). fp32 = full precision (slowest, safest).
 
 encoding:
-  batch_size: 64
+  batch_size: 256             # inference-only (no_grad) forward passes for
+                              # filtering, evaluation, and layer encoding. Short
+                              # seq (128) + no gradients means even 256 peaks at
+                              # only ~2GB on the largest model on a 24GB card, so
+                              # this is a free ~2-4x throughput gain over 64 with
+                              # huge headroom. Lower only on an unexpected OOM.
   dtype: float16              # layer representations are stored as float16
 
 tuning:                       # Optuna hyper-parameter search (tuning/ directory)

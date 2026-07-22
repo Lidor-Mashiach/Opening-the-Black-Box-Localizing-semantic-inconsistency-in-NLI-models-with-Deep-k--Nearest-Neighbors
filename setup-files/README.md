@@ -14,7 +14,7 @@ described in [README.md](../README.md).
 | 1 | `python setup-files/download_datasets.py` | Raw SNLI / MNLI / ANLI -> `Datasets/<ds>/raw/` | once (auto if skipped) | any |
 | 2 | *(nothing)* | Models download themselves from the HuggingFace Hub on first use | - | - |
 | 3 | `python setup-files/Paraphrase-Generator/generate_paraphrases.py` | The static paraphrase banks -> then **commit them** | once, ever | GPU |
-| 4 | `cd tuning && bash run_all_sbatch.sh` | Optuna (9 trainable combos): best hyper-parameters -> `configs/tuned/` | once (recommended, optional) | cluster |
+| 4 | `for f in tuning/sbatch/tune_*.sbatch - do sbatch "$f" - done` | Optuna (9 trainable combos): best hyper-parameters -> `configs/tuned/` | once (recommended, optional) | cluster |
 | 5 | `python Research-Pipeline/run_pipeline.py` | The experiment: fresh seed -> fine-tune -> encode -> DkNN -> metrics -> archive | **every time you want another sample** | GPU |
 
 Steps 0-4 build the assets. Step 5 is the research, repeatable at will.
@@ -82,7 +82,7 @@ Idempotent - safe to re-run. `--cpu-only` for machines without NVIDIA.
 | ANLI | `facebook/anli` | Facebook AI Research (Meta) - the creators | Nie et al., ACL 2020 |
 
 These are the canonical, original-author organizations on the Hub - the exact
-distribution the community cites; downloads are checksum-verified. The
+distribution the community cites - downloads are checksum-verified. The
 downloader snapshots every split to read-only parquet with the SAME loader the
 pipeline uses (unlabeled `-1` rows dropped, ANLI rounds r1-r3 concatenated),
 so every run forever sees identical bytes. Running it manually is optional -
@@ -94,10 +94,10 @@ so every run forever sees identical bytes. Running it manually is optional -
 
 **Where do the backbones live? INSIDE the project**, at
 `Models/raw/<MODEL>/`. On first need the HuggingFace weights (config +
-tokenizer + safetensors) are downloaded straight into that project folder;
+tokenizer + safetensors) are downloaded straight into that project folder
 every later run reuses the local copy. The HuggingFace home cache is never
 used - everything the code needs is in the project, in a clear hierarchy.
-`.gitignore` keeps the heavy weights local (folder + README tracked); deciding
+`.gitignore` keeps the heavy weights local (folder + README tracked) - deciding
 what to push is `.gitignore`'s job, not a reason to put files outside the
 repo. Set `HF_TOKEN` to raise Hub rate limits on the first download.
 
@@ -154,8 +154,8 @@ python setup-files/Paraphrase-Generator/generate_paraphrases.py
 ```
 
 A seeded pool of hypotheses per dataset -> the paraphraser proposes
-candidates -> three gates (length ratio; hypothesis <-> candidate must entail
-EACH OTHER; the verifier's (premise, candidate) label must equal the gold
+candidates -> three gates (length ratio - hypothesis <-> candidate must entail
+EACH OTHER - the verifier's (premise, candidate) label must equal the gold
 label) -> fresh sampling rounds continue until EVERY hypothesis holds EXACTLY
 the quota -> atomic write to `Datasets/<ds>/paraphrases/paraphrase_bank.csv`
 + an audit stats file. Two GLOBALS at the top of the script are the only
@@ -171,7 +171,7 @@ exist - and exits with this exact command if one is missing.
 ## Step 4 - Optuna: the best hyper-parameters (recommended, optional)
 
 ```bash
-cd tuning && bash run_all_sbatch.sh      # 9 GPU jobs (trainable combos), up to 7 days each
+for f in tuning/sbatch/tune_*.sbatch - do sbatch "$f" - done   # 9 GPU jobs (trainable combos), up to 7 days each
 squeue --me
 ```
 
@@ -187,7 +187,7 @@ SNLI is not the one it needs on adversarial ANLI. Objective: maximize
 validation accuracy. Search space (ranges straight from the BERT / RoBERTa /
 DeBERTa papers): `learning_rate` 5e-6..5e-5 log-uniform, `weight_decay`
 0..0.1, `warmup_ratio` 0..0.2, `epochs` 2..3, `batch_size` [16,32] base /
-[8,16] large; 40 trials per study, sqlite-resumable. Details, job resources
+[8,16] large - 40 trials per study, sqlite-resumable. Details, job resources
 and the reasoning: [tuning/README.md](../tuning/README.md).
 
 **What do you copy by hand? NOTHING - and this is by design.** Optuna writes
@@ -247,7 +247,7 @@ combinations need none. At every training the pipeline prints, in color:
 | Log | Meaning |
 |-----|---------|
 |  `[TRAIN] ... hyper-parameters: TUNED by Optuna (configs/tuned/<COMBO>.yaml)` | Training with the optimized values |
-|  `[WARN] ... no tuned config found (expected configs/tuned/<COMBO>.yaml) - training with the base defaults; run the Optuna sbatch jobs to optimize` | Training with the literature defaults from `configs/base.yaml` |
+|  `[WARN] ... no tuned config found (expected configs/tuned/<COMBO>.yaml) - training with the base defaults - run the Optuna sbatch jobs to optimize` | Training with the literature defaults from `configs/base.yaml` |
 
 The defaults are sane published values, so a run without tuning is valid -
 just not optimized. Recommended order: tune once -> then run the experiment
@@ -312,7 +312,7 @@ exactly.
 | Thing | Where | When |
 |-------|-------|------|
 | The paraphrase quota / dataset registry | the two GLOBALS in `setup-files/Paraphrase-Generator/generate_paraphrases.py` | before building the banks |
-| Cluster paths / conda env / per-model GPU / memory | the constants in `tuning/build_sbatch.py`, then `python tuning/build_sbatch.py` (regenerates all 9) + the two paths atop `tuning/run_all_sbatch.sh` | before submitting the tuning jobs |
+| Cluster paths / conda env / per-model GPU / memory | the `#SBATCH` directives inside each `tuning/sbatch/tune_*.sbatch` file (plain SLURM scripts, one per combination) | before submitting the tuning jobs |
 | Tuned hyper-parameters | **nothing** - Optuna writes `configs/tuned/`, the config merge picks it up | never |
 | Which run's results to keep | **nothing** - every run archives itself | never |
 
